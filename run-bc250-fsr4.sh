@@ -1,10 +1,19 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ICD="$DIR/radv-bc250-fsr4.json"
 
-printf "{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {\n    \"library_path\": \"%s/libvulkan_radeon.so\",\n    \"api_version\": \"1.4.0\"\n  }\n}\n" "$DIR" > "$ICD"
+if [[ $# -eq 0 ]]; then
+  echo "Usage: $0 <command> [args...]" >&2
+  echo "Example: $0 vulkaninfo --summary" >&2
+  exit 2
+fi
+
+"$DIR/setup.sh" >/dev/null
 
 export VK_DRIVER_FILES="$ICD"
+export VK_ICD_FILENAMES="$ICD"
+
 echo "Using BC-250 FSR4 RADV: $DIR/libvulkan_radeon.so"
 exec "$@"
