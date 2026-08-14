@@ -14,7 +14,9 @@ fi
 
 if command -v readelf >/dev/null; then
   mapfile -t deps < <(readelf -d "$LIB" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-  if command -v ldconfig >/dev/null && cache="$(ldconfig -p 2>/dev/null)"; then
+  if ((${#deps[@]} == 0)); then
+    echo "WARN: no shared-library dependencies found in $LIB"
+  elif command -v ldconfig >/dev/null && cache="$(ldconfig -p 2>/dev/null)"; then
     for dep in "${deps[@]}"; do
       if ! grep -Fq "$dep" <<< "$cache"; then
         echo "FAIL: dependency not found by ldconfig: $dep"
