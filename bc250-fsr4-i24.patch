@@ -1,8 +1,8 @@
 diff --git a/src/compiler/nir/nir_opt_algebraic.py b/src/compiler/nir/nir_opt_algebraic.py
-index 4ad4193..1d88f67 100644
+index 4ad4193..6f1c3b7 100644
 --- a/src/compiler/nir/nir_opt_algebraic.py
 +++ b/src/compiler/nir/nir_opt_algebraic.py
-@@ -408,10 +408,13 @@ for sz in (16, 32, 64):
+@@ -408,18 +408,29 @@ for sz in (16, 32, 64):
  
  # Shorthand for the expansion of just the dot product part of the [iu]dp4a
  # instructions.
@@ -10,6 +10,16 @@ index 4ad4193..1d88f67 100644
 -                                 ('imul', ('extract_i8', a, 1), ('extract_i8', b, 1))),
 -                        ('iadd', ('imul', ('extract_i8', a, 2), ('extract_i8', b, 2)),
 -                                 ('imul', ('extract_i8', a, 3), ('extract_i8', b, 3))))
+-udot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_u8', a, 0), ('extract_u8', b, 0)),
+-                                 ('imul', ('extract_u8', a, 1), ('extract_u8', b, 1))),
+-                        ('iadd', ('imul', ('extract_u8', a, 2), ('extract_u8', b, 2)),
+-                                 ('imul', ('extract_u8', a, 3), ('extract_u8', b, 3))))
+-sudot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_i8', a, 0), ('extract_u8', b, 0)),
+-                                  ('imul', ('extract_i8', a, 1), ('extract_u8', b, 1))),
+-                         ('iadd', ('imul', ('extract_i8', a, 2), ('extract_u8', b, 2)),
+-                                  ('imul', ('extract_i8', a, 3), ('extract_u8', b, 3))))
++# The extracted i8/u8 operands always fit in 24 bits, so the relaxed 24-bit
++# multiply opcodes are exact here and cannot produce poison.
 +sdot_4x8_a_b = ('iadd',
 +                    ('imul24_relaxed', ('extract_i8', a, 3), ('extract_i8', b, 3)),
 +                    ('iadd',
@@ -17,6 +27,20 @@ index 4ad4193..1d88f67 100644
 +                     ('iadd',
 +                      ('imul24_relaxed', ('extract_i8', a, 1), ('extract_i8', b, 1)),
 +                      ('imul24_relaxed', ('extract_i8', a, 0), ('extract_i8', b, 0)))))
- udot_4x8_a_b = ('iadd', ('iadd', ('imul', ('extract_u8', a, 0), ('extract_u8', b, 0)),
-                                  ('imul', ('extract_u8', a, 1), ('extract_u8', b, 1))),
-                         ('iadd', ('imul', ('extract_u8', a, 2), ('extract_u8', b, 2)),
++udot_4x8_a_b = ('iadd',
++                    ('umul24_relaxed', ('extract_u8', a, 3), ('extract_u8', b, 3)),
++                    ('iadd',
++                     ('umul24_relaxed', ('extract_u8', a, 2), ('extract_u8', b, 2)),
++                     ('iadd',
++                      ('umul24_relaxed', ('extract_u8', a, 1), ('extract_u8', b, 1)),
++                      ('umul24_relaxed', ('extract_u8', a, 0), ('extract_u8', b, 0)))))
++sudot_4x8_a_b = ('iadd',
++                     ('imul24_relaxed', ('extract_i8', a, 3), ('extract_u8', b, 3)),
++                     ('iadd',
++                      ('imul24_relaxed', ('extract_i8', a, 2), ('extract_u8', b, 2)),
++                      ('iadd',
++                       ('imul24_relaxed', ('extract_i8', a, 1), ('extract_u8', b, 1)),
++                       ('imul24_relaxed', ('extract_i8', a, 0), ('extract_u8', b, 0)))))
+ sdot_2x16_a_b = ('iadd', ('imul', ('extract_i16', a, 0), ('extract_i16', b, 0)),
+                          ('imul', ('extract_i16', a, 1), ('extract_i16', b, 1)))
+ udot_2x16_a_b = ('iadd', ('imul', ('extract_u16', a, 0), ('extract_u16', b, 0)),
