@@ -15,11 +15,11 @@ FSR 4 can run on the BC-250, but the normal software fallback for INT8 dot-produ
 
 Testing showed that enabling Mesa's native accelerated dot-product path directly is NOT correct on GFX1013. The resulting v_dot4_i32_i8 instruction path produced incorrect results and caused rendering problems.
 
-Instead, this experimental driver keeps the software fallback but optimizes the signed 4x8-bit dot-product lowering using signed i24 arithmetic and a reassociated expression.
+Instead, this experimental patch keeps the software fallback but optimizes 4x8-bit dot-product lowerings using 24-bit integer arithmetic and a reassociated expression that is easier for ACO to combine into MAD24 instructions.
 
 ## Current results
 
-Representative FSR 4.1.1 shader:
+Representative FSR 4.1.1 shader using the signed dot-product path:
 
     Stock fallback:
     Instructions:       64269
@@ -43,11 +43,14 @@ The optimized driver has been tested successfully with FSR 4.1.1 in Cyberpunk 20
 
 - AMD BC-250 / GFX1013
 - 64-bit Linux
-- Vulkan
+- Vulkan loader with VK_DRIVER_FILES support
 - RADV
 - FSR 4 enabled separately
+- Runtime libraries required by the packaged driver, including libLLVM.so.22.1, libSPIRV-Tools.so, libelf.so.1, libdrm_amdgpu.so.1 and normal X11/Wayland Vulkan WSI libraries
 
 This package does NOT install FSR 4 or OptiScaler.
+
+The Git repository does not include libvulkan_radeon.so. Use a release package, or place a matching Mesa/RADV build named libvulkan_radeon.so in this directory before running the helper scripts.
 
 ## Installation
 
@@ -65,7 +68,13 @@ Run:
 
     ./setup.sh
 
-The script generates the Vulkan ICD JSON using the current absolute path.
+The script generates the Vulkan ICD JSON using the current absolute path. It fails with a clear error if libvulkan_radeon.so is missing.
+
+Optional dependency check:
+
+    ./check.sh
+
+This checks the ICD and lists missing shared-library dependencies without executing the driver.
 
 ## Verify
 
@@ -75,8 +84,11 @@ Run:
 
 You should see:
 
-    AMD BC-250 (RADV GFX1013)
-    Mesa 26.1.6
+    driverName = radv
+    driverInfo = Mesa 26.1.6
+    deviceName = AMD BC-250 (RADV GFX1013)
+
+The exact deviceName depends on the kernel marketing name. If the kernel reports no marketing name, GFX1013 may still appear with a generic AMD name.
 
 ## Steam
 
@@ -88,7 +100,9 @@ it prints the exact Steam launch option.
 
 Example:
 
-    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json %command%
+    VK_DRIVER_FILES="/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json" %command%
+
+If your Vulkan loader is too old to support VK_DRIVER_FILES, update the loader. As a temporary compatibility fallback, VK_ICD_FILENAMES can point at the same ICD file.
 
 Use the path printed on YOUR machine.
 
@@ -126,9 +140,9 @@ Games may crash, display corrupted graphics, hang, or trigger a GPU reset.
 
 ## Technical details
 
-The normal Mesa fallback for signed packed 4x8 INT8 dot products expands the operation into signed byte extraction, integer multiplication and addition.
+The normal Mesa fallback for packed 4x8 INT8 dot products expands the operation into byte extraction, integer multiplication and addition.
 
-This patch changes the signed fallback to use signed i24 multiplication and a reassociated expression that generates substantially cheaper GFX10 code.
+This patch changes signed, unsigned and mixed signed/unsigned 4x8 fallbacks to use relaxed 24-bit multiplication and a reassociated expression that generates substantially cheaper GFX10 code. The relaxed operations are exact here because extracted i8/u8 operands always fit in 24 bits.
 
 It does NOT enable the native accelerated dot-product capability.
 
@@ -167,6 +181,9 @@ for:
     run-bc250-fsr4.sh
         Runs a program using the packaged driver.
 
+    check.sh
+        Checks the ICD and shared-library dependencies.
+
     bc250-fsr4-i24.patch
         Mesa source changes.
 
@@ -175,6 +192,17 @@ for:
 
     README.md
         This document.
+
+## Troubleshooting
+
+If the packaged driver does not appear in vulkaninfo:
+
+- Run ./check.sh and install any missing shared-library dependency it reports.
+- Confirm that libvulkan_radeon.so exists in this directory.
+- Confirm that the loader is new enough for VK_DRIVER_FILES.
+- Confirm that driverInfo says Mesa 26.1.6; otherwise the game is probably using the system RADV.
+
+Existing release binaries may be unstripped and include debug symbols. Release packages should include checksums for the exact libvulkan_radeon.so being tested.
 
 ## Testing results
 
