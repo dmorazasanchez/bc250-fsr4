@@ -211,15 +211,67 @@ for:
     build-anywhere.sh
         Builds the builder image, then runs it against a mounted volume. Run
         this from anywhere (ARM Mac via QEMU, or an x86_64 Linux host) to
-        produce libvulkan_radeon.so in the repo root.
+        produce libvulkan_radeon.so in the repo root. Accepts `stock`
+        and/or `patch` variants as arguments.
 
     build-bc250.sh
-        The real build: applies the patch, compiles Mesa, copies out
-        libvulkan_radeon.so. Runs inside the builder container (its ENTRYPOINT)
-        against the mounted /workspace and /build volumes.
+        The real per-variant build inside the builder container (ENTRYPOINT).
+        VARIANT=patch (default) applies the patch; VARIANT=stock builds the
+        same commit unpatched as libvulkan_radeon-stock.so.
+
+    cts-conformance.sh
+        Differential Vulkan CTS harness. Builds both driver variants and
+        deqp-vk in Docker, runs the caselist under each on the BC-250 GPU,
+        and diffs the verdicts. Run on the BC-250 Linux host.
+
+    Dockerfile.cts
+        Image that builds VK-GL-CTS deqp-vk, plus the runtime libs the RADV
+        drivers link against.
+
+    cts/caselist-focused.txt
+        --deqp-case wildcard groups for the focused conformance run.
+
+    cts/cts-diff.py
+        Parses two .qpa logs and classifies per-case changes.
 
     README.md
         This document.
+
+## Conformance
+
+`./cts-conformance.sh [--focused|--full]` runs a **differential** Khronos Vulkan
+CTS comparison to prove the patch broke nothing. It:
+
+1. Builds two RADV drivers in Docker from the exact `mesa-commit.txt`
+   revision: the patched build (`libvulkan_radeon.so`) and an unpatched
+   "stock" build (`libvulkan_radeon-stock.so`) - the patch is the only
+   variable.
+2. Builds the VK-GL-CTS `deqp-vk` binary in a separate Docker image.
+3. Runs the same caselist twice on the GPU, once per driver (`stock.qpa`,
+   `patched.qpa`).
+4. Diffs per-case verdicts with `cts/cts-diff.py`.
+
+Only a behavioural difference matters: `REGRESSION` (stock PASS -> patched
+non-PASS) blocks with exit 1; `IMPROVEMENT` (stock FAIL -> patched PASS) is
+good; `DIFFERENT` (a non-pass verdict changed) is suspicious and exits 2.
+The expected result is **zero differences**, since the patch is semantically
+a no-op for all inputs.
+
+This **must run on the BC-250 Linux host** - the QEMU/Docker harness used for
+building cannot execute CTS because there is no AMD GPU behind it; rendering
+conformance needs the real `amdgpu` device. The host therefore needs Docker,
+the `amdgpu` kernel module, and a `/dev/dri/renderD*` node (the same setup
+that already runs RADV for games). Run sudo/docker as a user with access to
+the GPU device if the container reports a DRM permission error.
+
+The default `--focused` caselist (`cts/caselist-focused.txt`) covers the
+groups most relevant to an INT8 shader-lowering change - `spirv_assembly`,
+`compute`, `shaders`, `pipeline`, `robustness` - and excludes `wsI` tests
+(the BC-250 is a compute-only card). `--full` runs all of `dEQP-VK.*`.
+
+Per-driver log outputs land in `.cts-out/` (gitignored).
+
+This verifies spec conformance, not FSR 4 performance or visual output.
 
 ## Testing results
 

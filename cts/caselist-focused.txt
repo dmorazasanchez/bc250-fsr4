@@ -1,0 +1,14 @@
+# Vulkan CTS groups most relevant to the sdot_4x8_a_b (signed INT8 4-way
+# dot-product lowering) change in nir_opt_algebraic.py.
+#
+# These are `--deqp-case` wildcard patterns. Each line is one pattern and is
+# passed to deqp-vk, which runs every matching leaf (so group names need not
+# enumerate individual cases, and never go stale).
+#
+# wsI / presentation groups are excluded (BC-250 is a compute-only card with
+# no display outputs). Override at runtime with:  ./cts-conformance.sh --full
+dEQP-VK.spirv_assembly.*
+dEQP-VK.compute.*
+dEQP-VK.shaders.*
+dEQP-VK.pipeline.*
+dEQP-VK.robustness.*

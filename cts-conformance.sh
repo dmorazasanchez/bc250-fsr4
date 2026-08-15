@@ -1,0 +1,100 @@
+#!/bin/bash
+# Differential Vulkan CTS conformance harness.
+#
+# Runs the Khronos Vulkan CTS (deqp-vk) twice on the BC-250 host - once under
+# the patched FSR4 RADV driver and once under the unpatched same-commit
+# driver - then diffs per-case verdicts to prove the patch broke nothing.
+#
+# REQUIRES the BC-250 AMD GPU host (this repo builds but cannot execute CTS:
+# there is no AMD GPU in a QEMU/Docker harness, rendering needs the real
+# device). The host needs: Docker, the `amdgpu` kernel module, and a
+# /dev/dri/renderD* node (the box already runs RADV for games).
+#
+# Usage: ./cts-conformance.sh [--focused|--full]
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MESA_IMG="bc250-fsr4:builder"
+CTS_IMG="bc250-fsr4:cts"
+DEQP="/opt/cts/build/external/vulkancts/modules/vulkan/deqp-vk"
+
+MODE="focused"
+[ "${1:-}" = "--full" ] && MODE="full"
+PLATFORM=""
+if [ "$(uname -m)" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then
+    echo "NOTE: emulated amd64 build under QEMU; must STILL run on a host with the BC-250 GPU."
+    PLATFORM="--platform linux/amd64"
+fi
+
+[ -e /dev/dri ] || {
+    echo "ERROR: /dev/dri not present - CTS needs the real AMD GPU (BC-250 host only)."
+    exit 1
+}
+
+COMMIT="$(head -n1 "$DIR/mesa-commit.txt")"
+
+# 1. Builder image (pristine Mesa at the pinned commit).
+docker info >/dev/null 2>&1 || { echo "Docker not running."; exit 1; }
+if ! docker image inspect "$MESA_IMG" >/dev/null 2>&1; then
+    echo "Building $MESA_IMG (Mesa $COMMIT)..."
+    docker buildx build --tag "$MESA_IMG" --load $PLATFORM \
+        --build-arg MESA_COMMIT="$COMMIT" "$DIR"
+fi
+
+# 2. Build both driver variants into the repo root (patch and stock).
+mkdir -p "$DIR/.build"
+for v in patch stock; do
+    echo "=== building $v driver variant ==="
+    docker run --rm $PLATFORM \
+        -e VARIANT="$v" \
+        -v "$DIR:/workspace" \
+        -v "$DIR/.build:/build" \
+        "$MESA_IMG"
+done
+
+# 3. CTS image (VK-GL-CTS, deqp-vk).
+echo "Building $CTS_IMG ..."
+docker buildx build --tag "$CTS_IMG" --load $PLATFORM \
+    -f "$DIR/Dockerfile.cts" "$DIR"
+
+# 4. Ephemeral ICD JSONs referencing the in-container driver paths.
+mkdir -p "$DIR/.cts-icd" "$DIR/.cts-out"
+cat > "$DIR/.cts-icd/radv-patched.json" <<EOF
+{"file_format_version":"1.0.0","ICD":{"library_path":"/ws/libvulkan_radeon.so","api_version":"1.4.0"}}
+EOF
+cat > "$DIR/.cts-icd/radv-stock.json" <<EOF
+{"file_format_version":"1.0.0","ICD":{"library_path":"/ws/libvulkan_radeon-stock.so","api_version":"1.4.0"}}
+EOF
+
+# 5. Case selection.
+if [ "$MODE" = "full" ]; then
+    CASES="dEQP-VK.*"
+else
+    CASES="$(grep -v '^[[:space:]]*#' "$DIR/cts/caselist-focused.txt" | grep -v '^[[:space:]]*$' | tr '\n' ',' | sed 's/,$//')"
+fi
+echo "Running CTS caselist in $MODE mode:"
+echo "  $CASES"
+
+run_one() { # $1 tag, $2 icd-name
+    echo "=== deqp-vk under $1 driver ==="
+    docker run --rm $PLATFORM \
+        --device /dev/dri --group-add video \
+        -v "$DIR:/ws" \
+        -v "$DIR/.cts-icd:/icd" \
+        -v "$DIR/.cts-out:/out" \
+        -e VK_DRIVER_FILES="/icd/$2" \
+        "$CTS_IMG" \
+        "$DEQP" \
+        --deqp-case="$CASES" \
+        --deqp-log-filename="/out/$1.qpa" \
+        --deqp-log-images=disable \
+        --deqp-log-shader-sources=disable
+}
+
+run_one patched radv-patched.json
+run_one stock radv-stock.json
+
+echo "=== comparing stock vs patched ==="
+python3 "$DIR/cts/cts-diff.py" "$DIR/.cts-out/stock.qpa" "$DIR/.cts-out/patched.qpa"
+rc=$?
+echo "results: $DIR/.cts-out/stock.qpa , $DIR/.cts-out/patched.qpa"
+exit $rc

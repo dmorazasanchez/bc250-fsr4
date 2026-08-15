@@ -4,7 +4,15 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMG="bc250-fsr4:builder"
 
 CLEAN=0
-[ "$1" = "--clean" ] && CLEAN=1
+VARIANTS=()
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=1 ;;
+        stock|patch) VARIANTS+=("$arg") ;;
+        *) echo "Unknown arg: $arg (expected: stock, patch, or --clean)" >&2; exit 1 ;;
+    esac
+done
+[ "${#VARIANTS[@]}" -eq 0 ] && VARIANTS=(patch)
 
 if ! docker info >/dev/null 2>&1; then
     echo "Docker is not running. Start Docker Desktop, then rerun this script."
@@ -23,10 +31,14 @@ docker buildx build --tag "$IMG" --load $PLATFORM \
     --build-arg MESA_COMMIT="$COMMIT" "$DIR"
 
 mkdir -p "$DIR/.build"
-docker run --rm $PLATFORM \
-    -v "$DIR:/workspace" \
-    -v "$DIR/.build:/build" \
-    "$IMG"
+for v in "${VARIANTS[@]}"; do
+    echo "=== Building $v variant ==="
+    docker run --rm $PLATFORM \
+        -e VARIANT="$v" \
+        -v "$DIR:/workspace" \
+        -v "$DIR/.build:/build" \
+        "$IMG"
+done
 
 if [ "$CLEAN" = "1" ]; then
     docker rmi "$IMG" >/dev/null 2>&1 || true
