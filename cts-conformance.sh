@@ -33,14 +33,16 @@ fi
 COMMIT="$(head -n1 "$DIR/mesa-commit.txt")"
 
 # 1. Builder image (pristine Mesa at the pinned commit).
+# Always rebuilt so a change to mesa-commit.txt (or to the patch/Mesa source)
+# is picked up; matches build-anywhere.sh semantics.
 docker info >/dev/null 2>&1 || { echo "Docker not running."; exit 1; }
-if ! docker image inspect "$MESA_IMG" >/dev/null 2>&1; then
-    echo "Building $MESA_IMG (Mesa $COMMIT)..."
-    docker buildx build --tag "$MESA_IMG" --load $PLATFORM \
-        --build-arg MESA_COMMIT="$COMMIT" "$DIR"
-fi
+echo "Building $MESA_IMG (Mesa $COMMIT)..."
+docker buildx build --tag "$MESA_IMG" --load $PLATFORM \
+    --build-arg MESA_COMMIT="$COMMIT" "$DIR"
 
-# 2. Build both driver variants into the repo root (patch and stock).
+# 2. Build both driver variants (patch and stock), then copy the host-owned
+#    .so files into the repo root (build-bc250.sh writes to .build so the
+#    container doesn't leave root-owned files in the workspace).
 mkdir -p "$DIR/.build"
 for v in patch stock; do
     echo "=== building $v driver variant ==="
@@ -50,6 +52,8 @@ for v in patch stock; do
         -v "$DIR/.build:/build" \
         "$MESA_IMG"
 done
+cp "$DIR/.build/libvulkan_radeon.so" "$DIR/libvulkan_radeon.so"
+cp "$DIR/.build/stock/libvulkan_radeon-stock.so" "$DIR/libvulkan_radeon-stock.so"
 
 # 3. CTS image (VK-GL-CTS, deqp-vk).
 echo "Building $CTS_IMG ..."
@@ -76,7 +80,7 @@ echo "  $CASES"
 
 run_one() { # $1 tag, $2 icd-name
     echo "=== deqp-vk under $1 driver ==="
-    docker run --rm $PLATFORM \
+    if docker run --rm $PLATFORM \
         --device /dev/dri --group-add video \
         -v "$DIR:/ws" \
         -v "$DIR/.cts-icd:/icd" \
@@ -87,7 +91,10 @@ run_one() { # $1 tag, $2 icd-name
         --deqp-case="$CASES" \
         --deqp-log-filename="/out/$1.qpa" \
         --deqp-log-images=disable \
-        --deqp-log-shader-sources=disable
+        --deqp-log-shader-sources=disable; then
+        return 0
+    fi
+    echo "WARNING: deqp-vk under $1 driver exited nonzero (rc=$?); continuing to diff."
 }
 
 run_one patched radv-patched.json

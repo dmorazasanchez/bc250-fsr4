@@ -6,9 +6,9 @@ TUNE="${TUNE:--march=x86-64-v3 -mtune=znver2}"
 VARIANT="${VARIANT:-patch}"
 
 if [ "$VARIANT" = "patch" ]; then
-    OUT="$WS/libvulkan_radeon.so"
+    OUT="$BD/libvulkan_radeon.so"
 else
-    OUT="$WS/libvulkan_radeon-stock.so"
+    OUT="$BD/stock/libvulkan_radeon-stock.so"
     BD="$BD/stock"
 fi
 

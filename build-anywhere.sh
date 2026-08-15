@@ -40,6 +40,15 @@ for v in "${VARIANTS[@]}"; do
         "$IMG"
 done
 
+# Copy host-owned .so files into the repo root (build-bc250.sh writes to
+# .build so the container doesn't leave root-owned files in the workspace).
+for v in "${VARIANTS[@]}"; do
+    case "$v" in
+        patch) cp "$DIR/.build/libvulkan_radeon.so" "$DIR/libvulkan_radeon.so" ;;
+        stock) cp "$DIR/.build/stock/libvulkan_radeon-stock.so" "$DIR/libvulkan_radeon-stock.so" ;;
+    esac
+done
+
 if [ "$CLEAN" = "1" ]; then
     docker rmi "$IMG" >/dev/null 2>&1 || true
     echo "Removed builder image: $IMG"
