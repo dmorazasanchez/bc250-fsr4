@@ -8,7 +8,8 @@
 # REQUIRES the BC-250 AMD GPU host (this repo builds but cannot execute CTS:
 # there is no AMD GPU in a QEMU/Docker harness, rendering needs the real
 # device). The host needs: Docker, the `amdgpu` kernel module, and a
-# /dev/dri/renderD* node (the box already runs RADV for games).
+# /dev/dri/renderD* node. The box is a gaming machine running a Wayland
+# compositor, so the focused caselist also exercises dEQP-VK.wsi.wayland.*.
 #
 # Usage: ./cts-conformance.sh [--focused|--full]
 set -e
@@ -29,6 +30,15 @@ fi
     echo "ERROR: /dev/dri not present - CTS needs the real AMD GPU (BC-250 host only)."
     exit 1
 }
+
+# Wayland display passthrough for the dEQP-VK.wsi.wayland.* cases. Only wired
+# up when a Wayland display is actually available, so headless runs still work.
+WAYLAND_OPTS=()
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+    WAYLAND_SOCK="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+    WAYLAND_OPTS=(--env XDG_RUNTIME_DIR --env WAYLAND_DISPLAY \
+        --volume "$WAYLAND_SOCK:$WAYLAND_SOCK")
+fi
 
 COMMIT="$(head -n1 "$DIR/mesa-commit.txt")"
 
@@ -85,6 +95,7 @@ run_one() { # $1 tag, $2 icd-name
         -v "$DIR:/ws" \
         -v "$DIR/.cts-icd:/icd" \
         -v "$DIR/.cts-out:/out" \
+        "${WAYLAND_OPTS[@]}" \
         -e VK_DRIVER_FILES="/icd/$2" \
         "$CTS_IMG" \
         "$DEQP" \

@@ -9,6 +9,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     python3-PyYAML python3-iniparse python3-lxml \
     vulkan-loader llvm-libs libdrm elfutils-libelf zlib libzstd \
     libX11 libxcb libxshmfence libXrandr libXxf86vm wayland-libs libglvnd \
+    wayland-devel wayland-protocols-devel \
   && dnf clean all
 
 ARG CTS_COMMIT=main
