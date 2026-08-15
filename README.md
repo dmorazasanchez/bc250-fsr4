@@ -67,6 +67,34 @@ Run:
 
 The script generates the Vulkan ICD JSON using the current absolute path.
 
+## Building the driver
+
+`libvulkan_radeon.so` is not shipped here. Build it from the patch against the
+Mesa revision in `mesa-commit.txt`:
+
+    ./build-anywhere.sh
+
+A Docker builder image (Fedora 44, with a pristine Mesa checkout at the revision
+in `mesa-commit.txt`) is built once, then each run mounts the repo and a build
+cache and compiles inside a throwaway container. The result is an x86_64
+(`-march=x86-64-v3 -mtune=znver2`) copy of `libvulkan_radeon.so` in the repo
+root, targeting the BC-250's Zen 2 cores.
+
+- On an ARM Mac (Apple Silicon) the container runs under QEMU emulation. This is
+  slow; start Docker Desktop first.
+- On an x86_64 Linux host (for example the BC-250 box itself) it builds natively,
+  which is much faster.
+
+The build output and cache live in `.build/` (gitignored), so editing the patch
+and re-running `./build-anywhere.sh` only recompiles the affected objects instead of doing
+a full clean rebuild. The builder image is persistent; remove it with
+`./build-anywhere.sh --clean` if you no longer need it. The Mesa revision is read from
+`mesa-commit.txt` on every run, so editing that file and re-running `./build-anywhere.sh`
+rebuilds the image against the new revision automatically.
+
+Either way the resulting `libvulkan_radeon.so` must be next to `setup.sh`, then
+run `./setup.sh` before use.
+
 ## Verify
 
 Run:
@@ -96,11 +124,11 @@ Use the path printed on YOUR machine.
 
 1440p:
 
-    VK_DRIVER_FILES=/absolute/path/to/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" gamescope -f -w 2560 -h 1440 -W 2560 -H 1440 -- %command% --launcher-skip
+    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" gamescope -f -w 2560 -h 1440 -W 2560 -H 1440 -- %command% --launcher-skip
 
 4K:
 
-    VK_DRIVER_FILES=/absolute/path/to/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" gamescope -f -w 3840 -h 2160 -W 3840 -H 2160 -- %command% --launcher-skip
+    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" gamescope -f -w 3840 -h 2160 -W 3840 -H 2160 -- %command% --launcher-skip
 
 WINEDLLOVERRIDES and Gamescope are not required by the RADV patch itself.
 
@@ -129,6 +157,8 @@ Games may crash, display corrupted graphics, hang, or trigger a GPU reset.
 The normal Mesa fallback for signed packed 4x8 INT8 dot products expands the operation into signed byte extraction, integer multiplication and addition.
 
 This patch changes the signed fallback to use signed i24 multiplication and a reassociated expression that generates substantially cheaper GFX10 code.
+
+Note: `sdot_4x8_a_b` in `nir_opt_algebraic.py` is a shared helper, so this change applies to every signed 4x8 dot-product software fallback in this build, not only FSR 4 shaders. All such products and sums stay within 24 bits, so the result is identical.
 
 It does NOT enable the native accelerated dot-product capability.
 
@@ -159,7 +189,9 @@ for:
 ## Files
 
     libvulkan_radeon.so
-        Experimental RADV driver.
+        Experimental RADV driver. Not shipped here - built from the patch
+        against the Mesa revision in mesa-commit.txt. The ICD JSON only
+        works after this binary exists.
 
     setup.sh
         Creates the Vulkan ICD JSON.
@@ -172,6 +204,19 @@ for:
 
     mesa-commit.txt
         Mesa source revision.
+
+    Dockerfile
+        Persistent Fedora 44 builder image (deps + pristine Mesa checkout).
+
+    build-anywhere.sh
+        Builds the builder image, then runs it against a mounted volume. Run
+        this from anywhere (ARM Mac via QEMU, or an x86_64 Linux host) to
+        produce libvulkan_radeon.so in the repo root.
+
+    build-bc250.sh
+        The real build: applies the patch, compiles Mesa, copies out
+        libvulkan_radeon.so. Runs inside the builder container (its ENTRYPOINT)
+        against the mounted /workspace and /build volumes.
 
     README.md
         This document.
