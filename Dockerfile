@@ -6,6 +6,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
     libdrm-devel elfutils-libelf-devel zlib-devel libzstd-devel \
     libX11-devel libXext-devel libxcb-devel libxshmfence-devel \
     libXrandr-devel libXxf86vm-devel wayland-devel wayland-protocols-devel \
+    libva-devel libdisplay-info-devel libunwind-devel lm_sensors-devel \
     llvm-devel libclc-devel glslang spirv-tools \
   && dnf clean all
 
