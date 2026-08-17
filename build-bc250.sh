@@ -14,7 +14,9 @@ fi
 
 cd /opt/mesa
 if [ "$VARIANT" = "patch" ]; then
-    git apply "$WS/bc250-fsr4-i24.patch"
+    git apply "$WS/v2-patches/0001-gfx1013-compute-queue-fix.patch"
+    git apply "$WS/bc250-fsr4-v2-selective-sdot.patch"
+    git apply "$WS/v2-patches/0003-radv-gfx103.patch"
 fi
 
 meson setup "$BD" "$PWD" \
