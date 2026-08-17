@@ -21,12 +21,19 @@ fi
 # Match the known-good EXP-028 build configuration used for runtime and
 # shader-corpus validation. Do not add host-specific -march/-mtune flags here:
 # keeping the compiler inputs equivalent matters more than CPU-side tuning.
-meson setup "$BD" "$PWD" \
-      -Dbuildtype=release \
-      -Dwrap_mode=nodownload \
-      -Dvulkan-drivers=amd \
-      -Dgallium-drivers=radeonsi \
-      -Dllvm=enabled
+MESON_ARGS=(
+    -Dbuildtype=release
+    -Dwrap_mode=nodownload
+    -Dvulkan-drivers=amd
+    -Dgallium-drivers=radeonsi
+    -Dllvm=enabled
+)
+
+if [ -f "$BD/meson-private/coredata.dat" ]; then
+    meson setup --reconfigure "$BD" "$PWD" "${MESON_ARGS[@]}"
+else
+    meson setup "$BD" "$PWD" "${MESON_ARGS[@]}"
+fi
 
 meson compile -C "$BD"
 
