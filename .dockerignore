@@ -1,0 +1,6 @@
+.build/
+.cts-out/
+.cts-icd/
+*.so
+.git/
+.DS_Store

@@ -1,3 +1,8 @@
 libvulkan_radeon.so
+libvulkan_radeon-stock.so
 radv-bc250-fsr4.json
 *.tar.gz
+.build/
+.cts-out/
+.cts-icd/
+__pycache__
