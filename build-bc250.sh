@@ -2,7 +2,6 @@
 set -e
 WS="${WORKSPACE:-/workspace}"
 BD="${BUILD_DIR:-/build}"
-TUNE="${TUNE:--march=x86-64-v3 -mtune=znver2}"
 VARIANT="${VARIANT:-patch}"
 
 if [ "$VARIANT" = "patch" ]; then
@@ -19,16 +18,15 @@ if [ "$VARIANT" = "patch" ]; then
     git apply "$WS/v2-patches/0003-radv-gfx103.patch"
 fi
 
+# Match the known-good EXP-028 build configuration used for runtime and
+# shader-corpus validation. Do not add host-specific -march/-mtune flags here:
+# keeping the compiler inputs equivalent matters more than CPU-side tuning.
 meson setup "$BD" "$PWD" \
-      -Dvulkan-drivers=amd \
-      -Dgallium-drivers= \
       -Dbuildtype=release \
-      -Dllvm=enabled \
-      -Dprefix=/usr \
-      -Dc_args="$TUNE" \
-      -Dc_link_args="$TUNE" \
-      -Dcpp_args="$TUNE" \
-      -Dcpp_link_args="$TUNE"
+      -Dwrap_mode=nodownload \
+      -Dvulkan-drivers=amd \
+      -Dgallium-drivers=radeonsi \
+      -Dllvm=enabled
 
 meson compile -C "$BD"
 
