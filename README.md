@@ -1,295 +1,271 @@
-# BC-250 / GFX1013 Experimental FSR 4 RADV Driver
+# BC-250 FSR4 v2 — Selective DP4A Breakthrough
 
-Experimental Mesa RADV build for the AMD BC-250 / GFX1013, intended to improve the performance of FSR 4 INT8 workloads.
+Experimental Mesa RADV build for the **AMD BC-250 / GFX1013**, focused on improving the performance of **FSR 4 INT8** workloads without enabling the broken native packed-dot path.
 
-This is an experimental test build. It does not replace your system Mesa installation and should NOT be installed system-wide.
+**v2 is based on Mesa 26.2.0 and the EXP-028 compiler strategy.**
 
-## What does this do?
+> Experimental software for BC-250 / GFX1013 only. Do **not** install this RADV library system-wide.
 
-The BC-250 is identified by Mesa as:
+## What changed in v2?
 
-    AMD BC-250 (RADV GFX1013)
-    PCI device ID: 0x13FE
+FSR 4 can run on the BC-250, but GFX1013 does not have a functionally usable native signed packed 4x8 dot-product path.
 
-FSR 4 can run on the BC-250, but the normal software fallback for INT8 dot-product operations is extremely expensive.
+Direct testing showed that forcing Mesa's accelerated path can emit `v_dot4_i32_i8`, but the instruction does not produce correct results on the BC-250:
 
-Testing showed that enabling Mesa's native accelerated dot-product path directly is NOT correct on GFX1013. The resulting v_dot4_i32_i8 instruction path produced incorrect results and caused rendering problems.
+    Expected: 70
+    Native v_dot4 result: 0
 
-Instead, this experimental driver keeps the software fallback but optimizes the signed 4x8-bit dot-product lowering using signed i24 arithmetic and a reassociated expression.
+The software fallback is correct, so this project optimizes that fallback instead.
 
-## Current results
+Mesa 26.2 already lowers the signed 4x8 dot product using relaxed 24-bit integer multiplies. Reassociating the addition tree improves code generation dramatically for many FSR4 shaders, but our 64-shader capture found an important problem: **global reassociation can cause catastrophic register pressure and spilling in specific kernels.**
 
-Representative FSR 4.1.1 shader:
+EXP-028 solves this selectively:
 
-    Stock fallback:
-    Instructions:       64269
-    Code size:          436656 bytes
-    Latency:            326131
-    Inverse Throughput: 306140
-    Pre-Sched VGPRs:    213
-    VALU:               40035
+- **Constant accumulator -> keep Mesa's balanced lowering**
+- **Non-constant accumulator -> use the optimized right-reassociated lowering**
 
-    Optimized fallback:
-    Instructions:       37613
-    Code size:          293824 bytes
-    Latency:            125293
-    Inverse Throughput: 103720
-    Pre-Sched VGPRs:    157
-    VALU:               36608
+This keeps the major performance wins while avoiding the worst spill regressions.
 
-The optimized driver has been tested successfully with FSR 4.1.1 in Cyberpunk 2077 on the BC-250, with correct rendering and substantially improved performance.
+## Representative compiler results
+
+### Hot FSR4 kernel (`8317...`)
+
+Stock / MastaG-style lowering:
+
+    VGPRs:              256
+    Pre-Sched VGPRs:     169
+    Spilled VGPRs:         0
+    Subgroups/SIMD:        4
+    Instructions:      16681
+    Latency:          407842
+
+v2 / EXP-028:
+
+    VGPRs:              168
+    Pre-Sched VGPRs:     138
+    Spilled VGPRs:         0
+    Subgroups/SIMD:        6
+    Instructions:      15486
+    Latency:          387788
+
+### Pathological shader (`ed7...`)
+
+Global reassociation:
+
+    Pre-Sched VGPRs:    3035
+    Spilled VGPRs:      2794
+    Scratch size:     699392
+    Instructions:      26926
+    Latency:           41938
+
+v2 / EXP-028:
+
+    Pre-Sched VGPRs:    1555
+    Spilled VGPRs:      1314
+    Scratch size:     320512
+    Instructions:      21750
+    Latency:           35962
+
+The selective rule restores the safe balanced lowering for this shader while retaining the reassociation win on the important hot kernels.
+
+## Real-world testing
+
+Tested on:
+
+- AMD BC-250 / GFX1013
+- PCI ID `0x13FE`
+- Mesa 26.2.0
+- FSR 4.1.1 INT8
+- Cyberpunk 2077
+
+In repeated same-scene testing, EXP-028 performed better than the previous MastaG/global-reassociation baseline while rendering correctly.
+
+This is the current known-good performance baseline for the project.
+
+## Clean-clone validation
+
+The v2 branch has been rebuilt successfully from a fresh GitHub clone on the BC-250.
+
+Validated runtime output:
+
+    deviceName    = AMD BC-250 (RADV GFX1013)
+    deviceID      = 0x13fe
+    driverName    = radv
+    driverVersion = 26.2.0
+    driverInfo    = Mesa 26.2.0 (git-9f0a761020)
+
+Fresh GitHub v2 build SHA256:
+
+    435ebcac375d5e5f3382e5123cf2b3de88ccbffc08fc17b7fa73759b28b04114
+
+Original locally tested EXP-028 build SHA256:
+
+    49f0ceb277e90734df1c1c6dcdfef2b871481da4bd32562ec397428492513af6
+
+The hashes differ because the reproducible builder uses a different compiler/toolchain environment from the original CachyOS host build. The Mesa revision, patch set and Meson feature configuration are the important reproducible inputs.
 
 ## Requirements
 
 - AMD BC-250 / GFX1013
 - 64-bit Linux
-- Vulkan
-- RADV
-- FSR 4 enabled separately
+- Vulkan / RADV
+- Docker for the reproducible build path
+- FSR 4 enabled separately in the game / translation layer
 
-This package does NOT install FSR 4 or OptiScaler.
+This repository does **not** install FSR 4 or OptiScaler.
 
-## Installation
+## Build
 
-Do NOT copy libvulkan_radeon.so into system Mesa directories.
+Clone the v2 branch:
 
-Extract:
+    git clone -b v2 --single-branch https://github.com/dmorazasanchez/bc250-fsr4.git
+    cd bc250-fsr4
 
-    tar -xzf bc250-fsr4-test.tar.gz
-
-Enter:
-
-    cd bc250-fsr4-test
-
-Run:
-
-    ./setup.sh
-
-The script generates the Vulkan ICD JSON using the current absolute path.
-
-## Building the driver
-
-`libvulkan_radeon.so` is not shipped here. Build it from the patch against the
-Mesa revision in `mesa-commit.txt`:
+Build:
 
     ./build-anywhere.sh
 
-A Docker builder image (Fedora 44, with a pristine Mesa checkout at the revision
-in `mesa-commit.txt`) is built once, then each run mounts the repo and a build
-cache and compiles inside a throwaway container. The result is an x86_64
-(`-march=x86-64-v3 -mtune=znver2`) copy of `libvulkan_radeon.so` in the repo
-root, targeting the BC-250's Zen 2 cores.
+The resulting driver will be placed in the repository root as:
 
-- On an ARM Mac (Apple Silicon) the container runs under QEMU emulation. This is
-  slow; start Docker Desktop first.
-- On an x86_64 Linux host (for example the BC-250 box itself) it builds natively,
-  which is much faster.
+    libvulkan_radeon.so
 
-The build output and cache live in `.build/` (gitignored), so editing the patch
-and re-running `./build-anywhere.sh` only recompiles the affected objects instead of doing
-a full clean rebuild. The builder image is persistent; remove it with
-`./build-anywhere.sh --clean` if you no longer need it. The Mesa revision is read from
-`mesa-commit.txt` on every run, so editing that file and re-running `./build-anywhere.sh`
-rebuilds the image against the new revision automatically.
+The v2 builder mirrors the EXP-028 Meson configuration:
 
-Either way the resulting `libvulkan_radeon.so` must be next to `setup.sh`, then
-run `./setup.sh` before use.
+    -Dbuildtype=release
+    -Dwrap_mode=nodownload
+    -Dvulkan-drivers=amd
+    -Dgallium-drivers=radeonsi
+    -Dllvm=enabled
+
+It deliberately does **not** add the old host-specific `-march=x86-64-v3 -mtune=znver2` flags.
+
+An existing `.build/` directory is explicitly reconfigured so stale v1 Meson options are not silently reused.
 
 ## Verify
 
-Run:
+Generate the ICD and run the validation helper:
+
+    ./setup.sh
+    ./check.sh
+
+Then verify the driver actually loads:
 
     ./run-bc250-fsr4.sh vulkaninfo --summary
 
-You should see:
+Expected device/driver:
 
     AMD BC-250 (RADV GFX1013)
-    Mesa 26.1.6
+    Mesa 26.2.0
 
 ## Steam
 
-After running:
+Run:
 
     ./setup.sh
 
-it prints the exact Steam launch option.
+Then use the generated ICD in Steam Launch Options.
 
 Example:
 
-    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json %command%
+    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" %command% --launcher-skip
 
-Use the path printed on YOUR machine.
+`WINEDLLOVERRIDES` is not required by the RADV patch itself; it is included here because it is useful in the tested Cyberpunk / OptiScaler setup.
 
-## Cyberpunk 2077 example
+Remove `VK_DRIVER_FILES` from the game launch options to return to your normal system RADV driver.
 
-1440p:
+## Patch order
 
-    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" gamescope -f -w 2560 -h 1440 -W 2560 -H 1440 -- %command% --launcher-skip
+The v2 patched build applies:
 
-4K:
+1. `v2-patches/0001-gfx1013-compute-queue-fix.patch`
+2. `bc250-fsr4-v2-selective-sdot.patch`
+3. `v2-patches/0003-radv-gfx103.patch`
 
-    VK_DRIVER_FILES=/absolute/path/to/bc250-fsr4-test/radv-bc250-fsr4.json WINEDLLOVERRIDES="version=n,b" gamescope -f -w 3840 -h 2160 -W 3840 -H 2160 -- %command% --launcher-skip
+The optional GFX10.3 override remains disabled unless `RADV_GFX103=1` is explicitly set at runtime.
 
-WINEDLLOVERRIDES and Gamescope are not required by the RADV patch itself.
+## Why not native DP4A?
 
-## Returning to normal RADV
+Because direct runtime testing showed the native path is not functionally usable on this hardware.
 
-Remove VK_DRIVER_FILES from the game launch options.
+The project therefore does **not** spoof accelerated packed-dot support and does not rely on `v_dot4_i32_i8`.
 
-Your system Mesa installation remains untouched.
+Instead, it optimizes Mesa's correct software signed INT8 dot-product fallback.
 
-## Important warning
+## Why selective reassociation?
 
-Experimental.
+Global reassociation looked excellent on the main hot shaders, but full-corpus profiling exposed two severe pathological cases.
 
-Tested specifically on:
+The key discriminator was the accumulator consumed by `sdot_4x8_iadd`:
+
+- constant accumulator chains were responsible for the catastrophic spill regressions
+- non-constant accumulator paths retained the large reassociation benefit
+
+The NIR algebraic rule therefore matches constant `c` first and keeps the balanced sum, then applies the reassociated form to the generic non-constant case.
+
+See [`V2.md`](V2.md) for the detailed EXP-028 investigation and shader metrics.
+
+## Benchmark tools
+
+`bench/` contains a Vulkan packed-dot diagnostic benchmark derived from work contributed by **higorprado** in PR #1.
+
+The benchmark is kept separate from the compiler patch. Historical results from the old 26.1.6 experiment are documented as historical data only; they are not the basis of the EXP-028 selective lowering.
+
+## Files
+
+    bc250-fsr4-v2-selective-sdot.patch
+        EXP-028 selective signed 4x8 dot-product lowering.
+
+    v2-patches/
+        BC-250 base patches used by the v2 build.
+
+    mesa-commit.txt
+        Mesa source revision/tag used for the build.
+
+    build-anywhere.sh
+        Reproducible Docker build entry point.
+
+    build-bc250.sh
+        Mesa build logic executed inside the builder container.
+
+    setup.sh
+        Generates an ICD JSON pointing at the local driver.
+
+    check.sh
+        Validates the built library, dependencies and ICD JSON.
+
+    run-bc250-fsr4.sh
+        Runs a command using the packaged v2 RADV driver.
+
+    V2.md
+        Detailed EXP-028 technical notes and validation results.
+
+    bench/
+        Packed INT8 dot-product diagnostic benchmark.
+
+## Credits
+
+Thanks to the BC-250 community for testing, reverse-engineering and sharing hardware findings.
+
+Special thanks to **higorprado** for PR #1, which contributed useful validation, packaging and benchmarking ideas. The global compiler reassociation from that PR is **not** used in v2; EXP-028 uses the selective signed lowering described above.
+
+Thanks also to the MastaG BC-250 work for the compute-queue and RADV compatibility patches used as part of the base environment.
+
+## Warning
+
+This is experimental software.
+
+It has been tested specifically on:
 
     AMD BC-250
     GFX1013
     PCI ID 0x13FE
 
-Do NOT install the included libvulkan_radeon.so system-wide.
+Do **not** install `libvulkan_radeon.so` system-wide.
 
-Games may crash, display corrupted graphics, hang, or trigger a GPU reset.
-
-## Technical details
-
-The normal Mesa fallback for signed packed 4x8 INT8 dot products expands the operation into signed byte extraction, integer multiplication and addition.
-
-This patch changes the signed fallback to use signed i24 multiplication and a reassociated expression that generates substantially cheaper GFX10 code.
-
-Note: `sdot_4x8_a_b` in `nir_opt_algebraic.py` is a shared helper, so this change applies to every signed 4x8 dot-product software fallback in this build, not only FSR 4 shaders. All such products and sums stay within 24 bits, so the result is identical.
-
-It does NOT enable the native accelerated dot-product capability.
-
-Testing has shown that forcing:
-
-    has_accelerated_dot_product = true
-
-causes ACO to emit:
-
-    v_dot4_i32_i8
-
-on GFX1013.
-
-A controlled runtime test showed that path is incorrect on the BC-250:
-
-    Expected: 70
-    Native v_dot4 result: 0
-
-The optimized software fallback correctly returned:
-
-    Expected: 70
-    Result:   70
-
-for:
-
-    1*5 + 2*6 + 3*7 + 4*8 = 70
-
-## Files
-
-    libvulkan_radeon.so
-        Experimental RADV driver. Not shipped here - built from the patch
-        against the Mesa revision in mesa-commit.txt. The ICD JSON only
-        works after this binary exists.
-
-    setup.sh
-        Creates the Vulkan ICD JSON.
-
-    run-bc250-fsr4.sh
-        Runs a program using the packaged driver.
-
-    bc250-fsr4-i24.patch
-        Mesa source changes.
-
-    mesa-commit.txt
-        Mesa source revision.
-
-    Dockerfile
-        Persistent Fedora 44 builder image (deps + pristine Mesa checkout).
-
-    build-anywhere.sh
-        Builds the builder image, then runs it against a mounted volume. Run
-        this from anywhere (ARM Mac via QEMU, or an x86_64 Linux host) to
-        produce libvulkan_radeon.so in the repo root. Accepts `stock`
-        and/or `patch` variants as arguments.
-
-    build-bc250.sh
-        The real per-variant build inside the builder container (ENTRYPOINT).
-        VARIANT=patch (default) applies the patch; VARIANT=stock builds the
-        same commit unpatched as libvulkan_radeon-stock.so.
-
-    cts-conformance.sh
-        Differential Vulkan CTS harness. Builds both driver variants and
-        deqp-vk in Docker, runs the caselist under each on the BC-250 GPU,
-        and diffs the verdicts. Run on the BC-250 Linux host.
-
-    Dockerfile.cts
-        Image that builds VK-GL-CTS deqp-vk, plus the runtime libs the RADV
-        drivers link against.
-
-    cts/caselist-focused.txt
-        --deqp-case wildcard groups for the focused conformance run.
-
-    cts/cts-diff.py
-        Parses two .qpa logs and classifies per-case changes.
-
-    README.md
-        This document.
-
-## Conformance
-
-`./cts-conformance.sh [--focused|--full]` runs a **differential** Khronos Vulkan
-CTS comparison to prove the patch broke nothing. It:
-
-1. Builds two RADV drivers in Docker from the exact `mesa-commit.txt`
-   revision: the patched build (`libvulkan_radeon.so`) and an unpatched
-   "stock" build (`libvulkan_radeon-stock.so`) - the patch is the only
-   variable.
-2. Builds the VK-GL-CTS `deqp-vk` binary in a separate Docker image.
-3. Runs the same caselist twice on the GPU, once per driver (`stock.qpa`,
-   `patched.qpa`).
-4. Diffs per-case verdicts with `cts/cts-diff.py`.
-
-Only a behavioural difference matters: `REGRESSION` (stock PASS -> patched
-non-PASS) blocks with exit 1; `IMPROVEMENT` (stock FAIL -> patched PASS) is
-good; `DIFFERENT` (a non-pass verdict changed) is suspicious and exits 2.
-The expected result is **zero differences**, since the patch is semantically
-a no-op for all inputs.
-
-This **must run on the BC-250 Linux host** - the QEMU/Docker harness used for
-building cannot execute CTS because there is no AMD GPU behind it; rendering
-conformance needs the real `amdgpu` device. The host therefore needs Docker,
-the `amdgpu` kernel module, and a `/dev/dri/renderD*` node (the same setup
-that already runs RADV for games). Run sudo/docker as a user with access to
-the GPU device if the container reports a DRM permission error.
-
-The default `--focused` caselist (`cts/caselist-focused.txt`) covers the
-groups most relevant to an INT8 shader-lowering change - `spirv_assembly`,
-`compute`, `shaders`, `pipeline`, `robustness` - and excludes `wsI` tests
-(the BC-250 is a compute-only card). `--full` runs all of `dEQP-VK.*`.
-
-Per-driver log outputs land in `.cts-out/` (gitignored).
-
-This verifies spec conformance, not FSR 4 performance or visual output.
-
-## Testing results
-
-Please report:
-
-- GPU frequency
-- CPU configuration
-- Game
-- FSR 4 version
-- Resolution
-- FSR quality mode
-- FPS with normal RADV
-- FPS with this driver
-- Rendering problems
-- Crashes or GPU resets
+Games may crash, display corrupted graphics, hang or trigger a GPU reset.
 
 ## Status
 
-Experimental proof-of-concept.
+**v2 / EXP-028 is runtime-validated and clean-clone build-validated on the BC-250.**
 
-FSR 4.1.1 has been successfully tested in Cyberpunk 2077 on the BC-250 with correct rendering and substantially improved performance.
+FSR 4.1.1 has been tested successfully in Cyberpunk 2077 with correct rendering and improved performance over the previous project baseline.
