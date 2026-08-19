@@ -40,6 +40,10 @@ def gh_put(repo:str, path:str, obj:Any, message:str):
     p=sh(args, timeout=40)
     if p.returncode: raise RuntimeError(p.stderr.strip() or f"PUT {path}")
 
+def gh_delete(repo:str, path:str, sha:str, message:str):
+    p=sh(["gh","api","--method","DELETE",f"repos/{repo}/contents/{path}","-f",f"message={message}","-f",f"sha={sha}"], timeout=40)
+    if p.returncode: raise RuntimeError(p.stderr.strip() or f"DELETE {path}")
+
 def gh_get_text(repo:str, path:str)->str|None:
     p=sh(["gh","api",f"repos/{repo}/contents/{path}","-H","Accept: application/vnd.github.raw"], timeout=30)
     return None if p.returncode else p.stdout
@@ -154,7 +158,10 @@ class GitHubTransport:
                 except Exception as e:
                     jid=name[:-5]; result={"protocol":PROTOCOL,"job_id":jid,"status":"error","host":socket.gethostname(),"error":f"{type(e).__name__}: {e}","result":{}}
                 try:
-                    gh_put(self.repo,f"{self.prefix}/results/{jid}.json",result,f"relay result {jid}"); self.seen.add(name); jwrite(STATE,{"seen":sorted(self.seen)[-2000:]})
+                    gh_put(self.repo,f"{self.prefix}/results/{jid}.json",result,f"relay result {jid}")
+                    try: gh_delete(self.repo,f"{self.prefix}/jobs/{name}",str(item.get("sha","")),f"relay consumed {jid}")
+                    except Exception: pass
+                    self.seen.add(name); jwrite(STATE,{"seen":sorted(self.seen)[-2000:]})
                 except Exception: pass
             time.sleep(float(self.cfg.get("poll_seconds",8)))
 
