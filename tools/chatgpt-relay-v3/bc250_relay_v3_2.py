@@ -138,8 +138,13 @@ class Transport:
         live=self._live_worker_sessions(); active={x['session'] for x in self.runner.snapshot()}
         with self.lock:
             stale=[s for s in self.claimed if s not in live and s not in active]
-            for s in stale:self.claimed.discard(s)
-            if not live and not active:self.inflight.clear()
+            for s in stale:
+                self.claimed.discard(s)
+                prefix=s+'--'
+                for name in list(self.inflight):
+                    if name.startswith(prefix):self.inflight.discard(name)
+            if not live and not active:
+                self.claimed.clear(); self.inflight.clear()
         return stale
     def tstatus(self):
         now=int(time.time()); self.reconcile_claims(); live=sorted(self._live_worker_sessions())
