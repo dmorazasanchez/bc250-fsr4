@@ -142,6 +142,8 @@ class Transport:
             if base.gh_get_text(self.repo,self.result_path(s,jid)) is not None:
                 try: base.gh_delete(self.repo,f'{self.prefix}/jobs/{name}',str(item.get('sha','')),f'relay duplicate consumed {s} {jid}')
                 except Exception: pass
+                history_add({'unix':int(time.time()),'session':s,'job_id':jid,'status':'duplicate','duration_s':round(time.time()-start,2)})
+                with self.lock:self.inflight.discard(name); self.claimed.discard(s)
                 return
             allowed,reason=self.sessions.allowed(s)
             result={'protocol':PROTOCOL,'relay_version':VERSION,'job_id':jid,'session':s,'host':socket.gethostname(),'control':self.sessions.snap(s)}
