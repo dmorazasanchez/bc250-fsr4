@@ -32,6 +32,15 @@ def session_of(job,name=''):
     if s not in SESSIONS: raise ValueError(f'invalid session {s!r}')
     return s
 
+def normalize_job_id(session,value):
+    j=str(value or '').strip()
+    prefix=session+'--'
+    while j.startswith(prefix):
+        j=j[len(prefix):]
+    if not j:
+        raise ValueError('empty job_id')
+    return j
+
 def history_add(x):
     HISTORY.parent.mkdir(parents=True,exist_ok=True)
     with HISTORY.open('a',encoding='utf-8') as f:f.write(json.dumps(x,ensure_ascii=False)+'\n')
@@ -136,9 +145,13 @@ class Transport:
             job=json.loads(raw)
             if job.get('protocol')!=PROTOCOL:raise ValueError('wrong protocol')
             if not secrets.compare_digest(str(job.get('token','')),str(self.cfg['token'])):raise PermissionError('token mismatch')
-            s=session_of(job,name); job['session']=s; jid=str(job.get('job_id') or jid)
+            s=session_of(job,name); job['session']=s
+            raw_jid=str(job.get('job_id') or jid); jid=normalize_job_id(s,raw_jid); job['job_id']=jid
             if '--' in name and not name.startswith(s+'--'):raise ValueError('filename/session mismatch')
-            # Idempotence: never re-run a job whose namespaced result already exists.
+            if name.startswith(s+'--'):
+                file_jid=normalize_job_id(s,name[:-5])
+                if file_jid!=jid: raise ValueError(f'filename/job_id mismatch: {file_jid} != {jid}')
+            # Idempotence: never re-run a job whose canonical namespaced result already exists.
             if base.gh_get_text(self.repo,self.result_path(s,jid)) is not None:
                 try: base.gh_delete(self.repo,f'{self.prefix}/jobs/{name}',str(item.get('sha','')),f'relay duplicate consumed {s} {jid}')
                 except Exception: pass
@@ -152,7 +165,11 @@ class Transport:
         except Exception as e:result={'protocol':PROTOCOL,'relay_version':VERSION,'job_id':jid,'session':s,'status':'error','host':socket.gethostname(),'error':f'{type(e).__name__}: {e}','result':{},'control':self.sessions.snap(s)}
         try:
             base.gh_put(self.repo,self.result_path(s,jid),result,f'relay {s} result {jid}')
+            # Compatibility aliases: old flat clients and clients that included session in job_id.
             if '--' not in name:base.gh_put(self.repo,f'{self.prefix}/results/{jid}.json',result,f'relay legacy result {jid}')
+            if 'raw_jid' in locals() and raw_jid!=jid:
+                alias=self.result_path(s,raw_jid)
+                if alias!=self.result_path(s,jid):base.gh_put(self.repo,alias,result,f'relay compatibility result {raw_jid}')
             try:base.gh_delete(self.repo,f'{self.prefix}/jobs/{name}',str(item.get('sha','')),f'relay consumed {s} {jid}')
             except Exception:pass
             self.ok()
