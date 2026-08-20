@@ -3,7 +3,7 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$DIR/libvulkan_radeon.so"
-ICD="$DIR/radv-bc250-fsr4.json"
+ICD="$DIR/radv-bc250-fsr4-v3.json"
 
 json_escape() {
   local s=${1//\\/\\\\}
@@ -13,7 +13,7 @@ json_escape() {
 
 if [[ ! -f "$LIB" ]]; then
   echo "Error: missing $LIB" >&2
-  echo "Build v2 first with ./build-anywhere.sh, or place the matching RADV binary here." >&2
+  echo "Use ./install-v3.sh for the precompiled release, or build V3 with ./build-anywhere.sh." >&2
   exit 1
 fi
 
