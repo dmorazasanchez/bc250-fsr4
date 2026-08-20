@@ -67,14 +67,12 @@ def gh_delete_retry(repo,path,sha,message,retries=3):
             _ORIG_DELETE(repo,path,sha,message); return
         except Exception as e:
             last=e
-            # If it disappeared between list and delete, deletion is already complete.
             try:
                 if gh_get_strict(repo,path,retries=1) is None:return
             except Exception:pass
             time.sleep(0.5*(2**i))
     raise RuntimeError(f'GitHub DELETE {path} failed: {last}')
 
-# v3.2 control/status helpers call these dynamically through base.
 v32.base.gh_list=gh_list_strict
 v32.base.gh_get_text=gh_get_strict
 v32.base.gh_put=gh_put_retry
@@ -146,11 +144,9 @@ class ReliableTransport(v32.Transport):
             state=_read_state(s,jid)
             if state and state.get('payload_hash') not in (None,_payload_hash(raw)):
                 raise RuntimeError('job_id reused with different payload')
-            # Durable recovery: a completed local job is only re-published, never re-executed.
             if state and state.get('state') in ('done','published') and state.get('result'):
                 result=state['result']; self.recovered_jobs+=1
                 self._publish_confirmed(s,jid,result,item,name); return
-            # A previous daemon died after marking RUNNING. Never repeat side effects automatically.
             if state and state.get('state')=='running' and state.get('instance')!=INSTANCE:
                 result={'protocol':v32.PROTOCOL,'relay_version':VERSION,'job_id':jid,'session':s,'host':socket.gethostname(),
                         'status':'error','error':'interrupted_previous_relay_instance; command was not re-executed','result':{},'control':self.sessions.snap(s)}
@@ -173,7 +169,6 @@ class ReliableTransport(v32.Transport):
             self._publish_confirmed(s,jid,result,item,name)
         except Exception as e:
             self.api_error(e)
-            # If execution produced a result, retain it locally for the next publish attempt.
             if result is not None:
                 try:_write_state(s,jid,{'state':'done','instance':INSTANCE,'payload_hash':_payload_hash(raw),'result':result})
                 except Exception:pass
@@ -234,8 +229,15 @@ class ReliableTransport(v32.Transport):
                 hb=now
             time.sleep(float(self.cfg.get('poll_seconds',3)))
 
-# Health must reflect actual queue reachability, not merely a live HTTP server.
-_orig_tstatus=ReliableTransport.tstatus
+class ReliableHandler(v32.Handler):
+    def do_GET(self):
+        if self.path.split('?',1)[0]=='/health':
+            t=self.server.transport.tstatus()
+            qage=t.get('queue_last_ok_age_s')
+            queue_ok=(qage is not None and qage < 30)
+            ok=queue_ok and not t.get('stale_claims')
+            return self.sendj(200 if ok else 503,{'ok':ok,'protocol':v32.PROTOCOL,'relay_version':VERSION,'host':socket.gethostname(),'active':self.server.runner.snapshot(),'sessions':self.server.sessions.snap(),'transport':t})
+        return super().do_GET()
 
 def main():
     cfg=v32.readj(v32.CFG_PATH)
@@ -246,7 +248,7 @@ def main():
     if os.environ.get('BC250_RELAY_QUEUE_PREFIX'):cfg['queue_prefix']=os.environ['BC250_RELAY_QUEUE_PREFIX']
     if not cfg.get('dashboard_key'):cfg['dashboard_key']=secrets.token_urlsafe(18); v32.writej(v32.CFG_PATH,cfg)
     sessions=v32.Sessions(); runner=v32.Runner(cfg,sessions); transport=ReliableTransport(cfg,runner,sessions)
-    http=v32.ThreadingHTTPServer((cfg.get('http_host','127.0.0.1'),int(cfg.get('http_port',8765))),v32.Handler)
+    http=v32.ThreadingHTTPServer((cfg.get('http_host','127.0.0.1'),int(cfg.get('http_port',8765))),ReliableHandler)
     http.cfg=cfg; http.runner=runner; http.sessions=sessions; http.transport=transport
     threading.Thread(target=http.serve_forever,daemon=True).start(); transport.loop()
 
