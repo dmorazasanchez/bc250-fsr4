@@ -132,8 +132,20 @@ class Transport:
     def __init__(self,cfg,runner,sessions):
         self.cfg=cfg; self.runner=runner; self.sessions=sessions; self.repo=cfg['repo']; self.prefix=cfg.get('queue_prefix','relay-v3'); self.lock=threading.Lock(); self.inflight=set(); self.claimed=set(); self.last_ok=0; self.last_poll=0; self.last_error=''
     def ok(self):self.last_ok=int(time.time()); self.last_error=''
+    def _live_worker_sessions(self):
+        return {t.name[6:] for t in threading.enumerate() if t.is_alive() and t.name.startswith('relay-')}
+    def reconcile_claims(self):
+        live=self._live_worker_sessions(); active={x['session'] for x in self.runner.snapshot()}
+        with self.lock:
+            stale=[s for s in self.claimed if s not in live and s not in active]
+            for s in stale:self.claimed.discard(s)
+            if not live and not active:self.inflight.clear()
+        return stale
     def tstatus(self):
-        now=int(time.time()); return {'last_ok_unix':self.last_ok,'last_ok_age_s':None if not self.last_ok else now-self.last_ok,'last_poll_unix':self.last_poll,'last_error':self.last_error}
+        now=int(time.time()); self.reconcile_claims(); live=sorted(self._live_worker_sessions())
+        with self.lock: claimed=sorted(self.claimed); inflight=sorted(self.inflight)
+        stale=[s for s in claimed if s not in live and s not in {x['session'] for x in self.runner.snapshot()}]
+        return {'last_ok_unix':self.last_ok,'last_ok_age_s':None if not self.last_ok else now-self.last_ok,'last_poll_unix':self.last_poll,'last_error':self.last_error,'claimed_sessions':claimed,'inflight_jobs':inflight,'worker_sessions':live,'stale_claims':stale}
     def hello(self):
         base.gh_put(self.repo,f'{self.prefix}/status/hello.json',{'protocol':PROTOCOL,'relay_version':VERSION,'token':self.cfg['token'],'host':socket.gethostname(),'allowed_roots':self.cfg['allowed_roots'],'http_port':self.cfg.get('http_port',8765),'sessions':list(SESSIONS),'job_filename':'<session>--<job_id>.json','result_filename':'<session>--<job_id>.json','version':3.2},'relay v3.1 hello'); self.ok()
     def status(self):
@@ -194,6 +206,7 @@ class Transport:
                 self.ok()
             except Exception as e:self.last_error=f'control: {type(e).__name__}: {e}'
     def jobs(self):
+        self.reconcile_claims()
         items=base.gh_list(self.repo,f'{self.prefix}/jobs'); self.last_poll=int(time.time()); self.ok()
         for item in items:
             name=item.get('name','')
@@ -236,7 +249,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p=urllib.parse.urlparse(self.path)
         if p.path=='/health':
-            t=self.server.transport.tstatus(); ok=t['last_ok_age_s'] is None or t['last_ok_age_s']<180; return self.sendj(200 if ok else 503,{'ok':ok,'protocol':PROTOCOL,'relay_version':VERSION,'host':socket.gethostname(),'active':self.server.runner.snapshot(),'sessions':self.server.sessions.snap(),'transport':t})
+            t=self.server.transport.tstatus(); ok=(t['last_ok_age_s'] is None or t['last_ok_age_s']<180) and not t.get('stale_claims'); return self.sendj(200 if ok else 503,{'ok':ok,'protocol':PROTOCOL,'relay_version':VERSION,'host':socket.gethostname(),'active':self.server.runner.snapshot(),'sessions':self.server.sessions.snap(),'transport':t})
         if p.path=='/':
             if not self.dkey():return self.sendj(401,{'error':'dashboard key required'})
             b=dashboard(self.server,self.server.cfg['dashboard_key']); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(b))); self.end_headers(); return self.wfile.write(b)
