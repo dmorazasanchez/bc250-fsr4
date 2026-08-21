@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE_BASE="https://raw.githubusercontent.com/dmorazasanchez/bc250-fsr4/v2/tools/chatgpt-relay-v3"
+# Exact production-tested v3.4 source snapshot from the v2 branch.
+RELAY_SOURCE_COMMIT="21d55f238c44145a456f6442dbfca0910539c7fa"
+SOURCE_BASE="https://raw.githubusercontent.com/dmorazasanchez/bc250-fsr4/$RELAY_SOURCE_COMMIT/tools/chatgpt-relay-v3"
 APP="bc250-relay-v3"
 BIN_DIR="$HOME/.local/bin"
 CFG_DIR="$HOME/.config/$APP"
@@ -21,8 +23,8 @@ Usage:
   install-v3.4-fresh.sh --repo OWNER/PRIVATE_QUEUE_REPO --root /workspace [--root /other/workspace]
 
 Options:
-  --repo OWNER/REPO       GitHub repository used as the relay queue. A private repo is strongly recommended.
-  --root PATH             Workspace root the relay may operate from. Repeatable; at least one is required.
+  --repo OWNER/REPO       GitHub repository used as the relay queue. Private is strongly recommended.
+  --root PATH             Workspace root. Repeatable; at least one is required.
   --queue-prefix PREFIX   Queue directory in the repo (default: relay-v3).
   --http-port PORT        Local dashboard/API port (default: 8765).
   --max-timeout SECONDS   Maximum shell-job timeout (default: 1800).
@@ -58,7 +60,11 @@ for cmd in python3 curl gh systemctl; do
   command -v "$cmd" >/dev/null || { echo "Missing dependency: $cmd" >&2; exit 1; }
 done
 gh auth status >/dev/null 2>&1 || { echo "Authenticate GitHub first: gh auth login" >&2; exit 1; }
-gh api "repos/$REPO" >/dev/null || { echo "Cannot access GitHub repo: $REPO" >&2; exit 1; }
+REPO_PRIVATE=$(gh api "repos/$REPO" --jq '.private' 2>/dev/null) || { echo "Cannot access GitHub repo: $REPO" >&2; exit 1; }
+if [[ "$REPO_PRIVATE" != "true" ]]; then
+  echo "WARNING: $REPO is public. Relay commands/results can contain sensitive data." >&2
+  echo "A dedicated private queue repository is strongly recommended." >&2
+fi
 
 mkdir -p "$BIN_DIR" "$CFG_DIR" "$DATA_DIR" "$UNIT_DIR"
 
@@ -81,9 +87,8 @@ repo, prefix = sys.argv[2], sys.argv[3]
 port, max_timeout = int(sys.argv[4]), int(sys.argv[5])
 roots = [str(pathlib.Path(p).expanduser().resolve()) for p in sys.argv[6:]]
 for root in roots:
-    if not pathlib.Path(root).exists():
-        raise SystemExit(f"workspace root does not exist: {root}
-")
+    if not pathlib.Path(root).is_dir():
+        raise SystemExit(f"workspace root is not a directory: {root}")
 old = {}
 if cfg_path.exists():
     try:
@@ -111,17 +116,13 @@ os.chmod(tmp, 0o600)
 tmp.replace(cfg_path)
 PY
 
-# The strict v3.3/v3.4 transport expects jobs/ and control/ to exist.
+# v3.3/v3.4 use strict GitHub directory reads; make the queue directories real.
 ensure_keep() {
   local rel="$1"
   local path="$QUEUE_PREFIX/$rel/.keep"
   if ! gh api "repos/$REPO/contents/$path" >/dev/null 2>&1; then
     local content
-    content=$(python3 - <<'PY'
-import base64
-print(base64.b64encode(b'{}\n').decode())
-PY
-)
+    content=$(python3 -c 'import base64; print(base64.b64encode(b"{}\n").decode())')
     gh api --method PUT "repos/$REPO/contents/$path" \
       -f message="relay v3.4 bootstrap $rel" \
       -f content="$content" >/dev/null
@@ -148,37 +149,27 @@ TimeoutStopSec=8
 WantedBy=default.target
 EOF
 
-cat > "$WATCHDOG" <<'EOF'
+cat > "$WATCHDOG" <<EOF
 #!/usr/bin/env bash
 set -u
-STATE="$HOME/.local/share/bc250-relay-v3/watchdog-failures"
-body=$(curl -sS --max-time 5 http://127.0.0.1:8765/health 2>/dev/null || true)
-read_status=$(printf '%s' "$body" | python3 -c 'import json,sys
+STATE="\$HOME/.local/share/bc250-relay-v3/watchdog-failures"
+body=\$(curl -sS --max-time 5 http://127.0.0.1:$HTTP_PORT/health 2>/dev/null || true)
+read_status=\$(printf '%s' "\$body" | python3 -c 'import json,sys
 try:
  d=json.load(sys.stdin); print(("1" if d.get("ok") else "0")+" "+str(len(d.get("active") or [])))
 except Exception: print("0 0")')
-set -- $read_status
-ok=${1:-0}; active=${2:-0}
-if [[ "$ok" == 1 ]]; then echo 0 > "$STATE"; exit 0; fi
-if [[ "$active" -gt 0 ]]; then exit 0; fi
-n=0; [[ -f "$STATE" ]] && n=$(cat "$STATE" 2>/dev/null || echo 0)
-n=$((n+1)); echo "$n" > "$STATE"
-if [[ "$n" -ge 3 ]]; then
-  echo 0 > "$STATE"
+set -- \$read_status
+ok=\${1:-0}; active=\${2:-0}
+if [[ "\$ok" == 1 ]]; then echo 0 > "\$STATE"; exit 0; fi
+if [[ "\$active" -gt 0 ]]; then exit 0; fi
+n=0; [[ -f "\$STATE" ]] && n=\$(cat "\$STATE" 2>/dev/null || echo 0)
+n=\$((n+1)); echo "\$n" > "\$STATE"
+if [[ "\$n" -ge 3 ]]; then
+  echo 0 > "\$STATE"
   systemctl --user restart bc250-relay-v3.service
 fi
 EOF
 chmod +x "$WATCHDOG"
-
-# Patch the health port into the watchdog if a non-default port was requested.
-if [[ "$HTTP_PORT" != 8765 ]]; then
-  python3 - "$WATCHDOG" "$HTTP_PORT" <<'PY'
-from pathlib import Path
-import sys
-p=Path(sys.argv[1]); port=sys.argv[2]
-p.write_text(p.read_text().replace('127.0.0.1:8765', f'127.0.0.1:{port}'))
-PY
-fi
 
 cat > "$WATCHDOG_SERVICE" <<'EOF'
 [Unit]
@@ -255,16 +246,17 @@ PY
 cat <<EOF
 
 BC-250 Relay v3.4 is healthy.
-Queue repo:     $REPO
-Queue prefix:   $QUEUE_PREFIX
-Health:         http://127.0.0.1:$HTTP_PORT/health
-Dashboard:      http://127.0.0.1:$HTTP_PORT/?key=$DASHBOARD_KEY
+Source snapshot: $RELAY_SOURCE_COMMIT
+Queue repo:      $REPO
+Queue prefix:    $QUEUE_PREFIX
+Health:          http://127.0.0.1:$HTTP_PORT/health
+Dashboard:       http://127.0.0.1:$HTTP_PORT/?key=$DASHBOARD_KEY
 
-Relay token (KEEP PRIVATE; give it only to the trusted client/ChatGPT session that will submit jobs):
+Relay token (KEEP PRIVATE; give it only to the trusted ChatGPT/client session that submits jobs):
 $TOKEN
 
-For an always-on headless host, consider enabling user lingering:
+For an always-on headless host, consider:
   loginctl enable-linger "$USER"
 
-Next: read README.md and examples/CHATGPT_INSTRUCTIONS.md.
+Next: README-v3.4.md and examples/CHATGPT_INSTRUCTIONS.md
 EOF
