@@ -56,15 +56,13 @@ done
 [[ -n "$RESULT" ]] || { echo "Timed out waiting for $RESULT_PATH" >&2; exit 1; }
 printf '%s\n' "$RESULT" | python3 -m json.tool
 
-printf '%s\n' "$RESULT" | python3 - "$JOB_ID" "$SESSION" <<'PY'
-import json,sys
+python3 -c 'import json,sys
 jid,session=sys.argv[1],sys.argv[2]
 d=json.load(sys.stdin)
-assert d.get('relay_version') == '3.4', d
-assert d.get('job_id') == jid, d
-assert d.get('session') == session, d
-assert d.get('status') == 'ok', d
-assert (d.get('result') or {}).get('pong') is True, d
-PY
+assert d.get("relay_version") == "3.4", d
+assert d.get("job_id") == jid, d
+assert d.get("session") == session, d
+assert d.get("status") == "ok", d
+assert (d.get("result") or {}).get("pong") is True, d' "$JOB_ID" "$SESSION" <<<"$RESULT"
 
 echo "PASS: Relay v3.4 GitHub round trip succeeded."
