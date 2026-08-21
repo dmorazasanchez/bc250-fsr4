@@ -1,92 +1,42 @@
-# BC-250 Relay v3
+# BC-250 Relay
 
-Relay v3 replaces the GitHub-issue comment queue with a file-addressed queue in the private control repository.
+The current tested relay is **v3.4**.
 
-## Why v3
+Relay turns a private GitHub repository into a durable job queue between a trusted ChatGPT/client session and a Linux BC-250 development host.
 
-- No issue pagination failure.
-- No comment-thread growth.
-- Every job has a deterministic result path.
-- Process-group timeouts: a timed-out game/build kills its whole process group.
-- Full stdout/stderr is saved locally as an artifact; GitHub gets a compact result.
-- `cancel` operation for running jobs.
-- Heartbeat and health endpoints.
-- Local HTTP API on `127.0.0.1:8765` for direct/local/Tailscale access.
-- GitHub remains the ChatGPT-compatible transport; Tailscale Funnel can expose the HTTP endpoint for humans or future direct integrations.
+For a clean installation on another machine, start here:
 
-## Transport layout
+**[README-v3.4.md](README-v3.4.md)**
 
-Private repo `dmorazasanchez/hola`:
-
-- `relay-v3/jobs/<job_id>.json` — ChatGPT creates one file per job.
-- `relay-v3/results/<job_id>.json` — daemon writes exactly one result file.
-- `relay-v3/status/hello.json` — current token, host, workspaces, version.
-- `relay-v3/status/heartbeat.json` — liveness and active jobs.
-
-There is no need to scan or poll an issue thread. Once ChatGPT creates `relay-v3/jobs/foo.json`, it fetches only `relay-v3/results/foo.json` until available.
-
-## Install
+Fresh install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dmorazasanchez/bc250-fsr4/v2/tools/chatgpt-relay-v3/install.sh | bash
+curl -fsSL \
+  https://raw.githubusercontent.com/dmorazasanchez/bc250-fsr4/relay-v3.4-reproducible/tools/chatgpt-relay-v3/install-v3.4-fresh.sh \
+  -o /tmp/install-relay.sh
+chmod +x /tmp/install-relay.sh
+
+/tmp/install-relay.sh \
+  --repo YOUR_GITHUB_USER/YOUR_PRIVATE_QUEUE_REPO \
+  --root "$HOME/YOUR_PROJECT"
 ```
 
-The installer keeps an existing v3 config, auto-detects known BC-250 workspaces on first install, installs a user service, and starts it.
-
-## Operations
-
-- `ping`
-- `shell`
-- `cancel`
-- `read_file`
-- `write_file`
-- `git_status`
-- `git_diff`
-- `list_files`
-
-Example job file:
-
-```json
-{
-  "protocol": "BC250_RELAY_V3",
-  "token": "TOKEN_FROM_STATUS_HELLO",
-  "job_id": "fsr4-probe-001",
-  "op": "shell",
-  "cwd": "/home/david/bc250-fsr4-v2-test",
-  "command": "git status --short --branch",
-  "timeout": 30
-}
-```
-
-Result path is then exactly:
-
-`relay-v3/results/fsr4-probe-001.json`
-
-## Local HTTP API
-
-Health does not require a token:
+Then verify the full GitHub round trip with:
 
 ```bash
-curl http://127.0.0.1:8765/health
+bash tools/chatgpt-relay-v3/relay-self-test.sh fsr4
 ```
 
-Authenticated jobs use `X-Relay-Token`:
+Important files:
 
-```bash
-curl -H "X-Relay-Token: $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"op":"ping","job_id":"local-ping"}' \
-  http://127.0.0.1:8765/
-```
+- `README-v3.4.md` — architecture, install, protocol, recovery semantics and operations.
+- `install-v3.4-fresh.sh` — clean-machine installer pinned to the production-tested v3.4 source snapshot.
+- `relay-self-test.sh` — real GitHub queue -> relay -> result round-trip test.
+- `examples/CHATGPT_INSTRUCTIONS.md` — client instructions for a ChatGPT session.
+- `SECURITY.md` — security model and deployment warnings.
 
-The API is intentionally bound to localhost. If desired, expose it through Tailscale Funnel:
+## Security warning
 
-```bash
-tailscale funnel --bg 8765
-```
+This relay intentionally provides trusted remote command execution. A `shell` job executes with the normal permissions of the Unix account running the service. `allowed_roots` is not a shell sandbox.
 
-Tailscale Funnel is a separate network transport. Current ChatGPT sessions still use the GitHub-file queue because ChatGPT does not expose a generic arbitrary HTTP POST tool here. The direct API is useful for the user's phone/browser tooling and for a future MCP/custom connector.
-
-## Chat instruction for v3
-
-Use the private repo `dmorazasanchez/hola` as the BC-250 Relay v3 queue. Read `relay-v3/status/hello.json` first and use its token. Create each job as a new JSON file under `relay-v3/jobs/<unique_job_id>.json`, then read only `relay-v3/results/<same_job_id>.json` for the result. Do not use issue #1 for v3 jobs. Use bounded timeouts. Large stdout/stderr is persisted locally and the result contains the artifact path. If a job needs human interaction, stop and ask the user rather than assuming the outcome.
+Use a private queue repository, keep the relay token secret, run the daemon as an unprivileged user, and read `SECURITY.md` before use.
