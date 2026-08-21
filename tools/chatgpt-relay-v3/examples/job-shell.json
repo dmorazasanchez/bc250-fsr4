@@ -1,0 +1,10 @@
+{
+  "protocol": "BC250_RELAY_V3",
+  "token": "YOUR_PRIVATE_RELAY_TOKEN",
+  "session": "fsr4",
+  "job_id": "status-001",
+  "op": "shell",
+  "cwd": "/home/YOU/YOUR_PROJECT",
+  "command": "git status --short --branch",
+  "timeout": 30
+}
