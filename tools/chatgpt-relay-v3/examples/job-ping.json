@@ -1,0 +1,7 @@
+{
+  "protocol": "BC250_RELAY_V3",
+  "token": "YOUR_PRIVATE_RELAY_TOKEN",
+  "session": "fsr4",
+  "job_id": "ping-001",
+  "op": "ping"
+}
