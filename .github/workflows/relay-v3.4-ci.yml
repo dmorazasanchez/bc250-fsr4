@@ -1,0 +1,75 @@
+name: Relay v3.4 reproducibility
+
+on:
+  push:
+    branches:
+      - relay-v3.4-reproducible
+    paths:
+      - 'tools/chatgpt-relay-v3/**'
+      - '.github/workflows/relay-v3.4-ci.yml'
+  pull_request:
+    paths:
+      - 'tools/chatgpt-relay-v3/**'
+      - '.github/workflows/relay-v3.4-ci.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Bash syntax
+        run: |
+          bash -n tools/chatgpt-relay-v3/install-v3.4-fresh.sh
+          bash -n tools/chatgpt-relay-v3/relay-self-test.sh
+
+      - name: Compile embedded Python heredocs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          paths = [
+              Path('tools/chatgpt-relay-v3/install-v3.4-fresh.sh'),
+              Path('tools/chatgpt-relay-v3/relay-self-test.sh'),
+          ]
+          for path in paths:
+              lines = path.read_text().splitlines()
+              blocks = []
+              current = None
+              start = 0
+              for i, line in enumerate(lines, 1):
+                  if current is None and "<<'PY'" in line:
+                      current = []
+                      start = i + 1
+                      continue
+                  if current is not None:
+                      if line == 'PY':
+                          blocks.append((start, '\n'.join(current) + '\n'))
+                          current = None
+                      else:
+                          current.append(line)
+              if current is not None:
+                  raise SystemExit(f'{path}: unterminated Python heredoc')
+              for lineno, source in blocks:
+                  compile(source, f'{path}:{lineno}', 'exec')
+              print(f'{path}: {len(blocks)} Python heredoc(s) compile')
+          PY
+
+      - name: Validate JSON examples
+        run: |
+          python3 -m json.tool tools/chatgpt-relay-v3/examples/job-ping.json >/dev/null
+          python3 -m json.tool tools/chatgpt-relay-v3/examples/job-shell.json >/dev/null
+
+      - name: Verify pinned production source snapshot
+        env:
+          SHA: 21d55f238c44145a456f6442dbfca0910539c7fa
+        run: |
+          base="https://raw.githubusercontent.com/dmorazasanchez/bc250-fsr4/$SHA/tools/chatgpt-relay-v3"
+          curl -fsSL "$base/bc250_relay_v3.py" -o /tmp/base.py
+          curl -fsSL "$base/bc250_relay_v3_2.py" -o /tmp/v32.py
+          curl -fsSL "$base/bc250_relay_v3_3.py" -o /tmp/v33.py
+          curl -fsSL "$base/bc250_relay_v3_4.py" -o /tmp/v34.py
+          python3 -m py_compile /tmp/base.py /tmp/v32.py /tmp/v33.py /tmp/v34.py
+
+      - name: Installer help smoke test
+        run: bash tools/chatgpt-relay-v3/install-v3.4-fresh.sh --help >/dev/null
