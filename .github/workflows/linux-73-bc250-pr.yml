@@ -1,0 +1,78 @@
+name: BC250 Linux 7.3-pre PR build
+
+on:
+  pull_request:
+    branches:
+      - v3
+    paths:
+      - 'linux-73-bc250/**'
+      - '.github/workflows/linux-73-bc250-pr.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm \
+            git bc binutils cpio gettext glibc libelf libgcc openssl pahole \
+            perl python rust rust-bindgen rust-src tar xxhash xz zlib zstd \
+            clang llvm lld kmod libarchive
+
+      - uses: actions/checkout@v4
+
+      - name: Trim debug-only payload
+        run: |
+          set -euxo pipefail
+          cd linux-73-bc250
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('PKGBUILD')
+          s = p.read_text()
+          needle = "  scripts/config -e DRM -e DRM_AMDGPU -e HSA_AMD -e DRM_TTM\n"
+          repl = needle + "\n  scripts/config -d DEBUG_INFO -d DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \\\n    -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_DWARF5 \\\n    -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES\n"
+          if needle not in s:
+              raise SystemExit('PKGBUILD anchor not found')
+          p.write_text(s.replace(needle, repl, 1))
+          PY
+
+      - name: Build package
+        run: |
+          set -euxo pipefail
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE/linux-73-bc250"
+          set +e
+          su builder -c 'MAKEFLAGS=-j2 makepkg --noconfirm --cleanbuild --nocheck' 2>&1 | tee "$GITHUB_WORKSPACE/linux-73-bc250-build.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          exit "$rc"
+
+      - name: Validate package
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts
+          cp linux-73-bc250/*.pkg.tar.* artifacts/
+          pkg="$(find artifacts -maxdepth 1 -type f -name '*.pkg.tar.*' | head -n1)"
+          pacman -Qip "$pkg"
+          bsdtar -tf "$pkg" | grep -E '^usr/lib/modules/.+/vmlinuz$'
+          bsdtar -tf "$pkg" | grep -E '^usr/lib/modules/.+/pkgbase$'
+          bsdtar -tf "$pkg" | grep -E 'nct6687\.ko(\.zst)?$'
+          cp linux-73-bc250/PKGBUILD artifacts/PKGBUILD.used
+          cp linux-73-bc250-build.log artifacts/build.log
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bc250-73pre-2709dd5
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 0
