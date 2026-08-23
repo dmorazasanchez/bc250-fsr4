@@ -57,6 +57,15 @@ jobs:
           set -e
           exit "$rc"
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bc250-73pre-build-log
+          path: linux-73-bc250-build.log
+          if-no-files-found: warn
+          compression-level: 0
+
       - name: Validate package
         run: |
           set -euxo pipefail
