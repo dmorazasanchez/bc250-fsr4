@@ -26,7 +26,7 @@ jobs:
           pacman -S --needed --noconfirm \
             git bc binutils cpio gettext glibc libelf libgcc openssl pahole \
             perl python rust rust-bindgen rust-src tar xxhash xz zlib zstd \
-            clang llvm lld kmod libarchive
+            clang llvm lld kmod libarchive mkinitcpio
 
       - uses: actions/checkout@v4
 
