@@ -94,10 +94,12 @@ build() {
   # CachyOS normally gets O3 from its own Kconfig patch, absent in vanilla
   # upstream. KCFLAGS keeps the aggressive build without importing old 7.2
   # scheduler patches. -mtune=znver2 tunes scheduling for the BC-250 Zen 2 CPU
-  # without raising the x86 ISA baseline.
+  # without raising the x86 ISA baseline or enabling SIMD in kernel code.
   export KCFLAGS='-O3 -mtune=znver2'
 
-  make LLVM=1 LLVM_IAS=1 -j"$(nproc)" all
+  # Do not force -j$(nproc) here. Respect MAKEFLAGS from the build host so CI
+  # can cap memory use while a local BC-250 build can choose its own job count.
+  make LLVM=1 LLVM_IAS=1 all
 }
 
 package() {
