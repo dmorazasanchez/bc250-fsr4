@@ -1,7 +1,7 @@
 pkgbase=linux-bc250-73pre
 pkgname=(linux-bc250-73pre)
 pkgver=7.3pre.2709dd5
-pkgrel=1
+pkgrel=2
 pkgdesc='Experimental Linux 7.3-pre kernel for AMD BC-250/GFX1013 with MastaG patches'
 arch=(x86_64)
 url='https://github.com/dmorazasanchez/bc250-fsr4'
@@ -51,9 +51,10 @@ prepare() {
   # into this first experiment: we want the new 7.3 scheduler behavior itself.
   scripts/config -d SCHED_BORE -d SCHED_ALT -d SCHED_BMQ
 
-  # BC-250 board support from MastaG.
+  # BC-250 board support from MastaG. Keep AMDGPU modular like CachyOS so the
+  # initramfs can carry amdgpu.ko and its firmware normally.
   scripts/config -d SENSORS_NCT6683 -m SENSORS_NCT6687
-  scripts/config -e DRM -e DRM_AMDGPU -e HSA_AMD -e DRM_TTM
+  scripts/config -e DRM -m DRM_AMDGPU -e HSA_AMD -e DRM_TTM
 
   # This pinned 7.3 merge-window snapshot has an in-tree build break in the
   # Cadence MACB/GEM Ethernet driver. BC-250 does not use Cadence MACB/GEM, so
@@ -84,7 +85,7 @@ prepare() {
   # Hard requirements: fail CI rather than silently building the wrong experiment.
   grep -q '^CONFIG_HZ_1000=y$' .config
   grep -q '^CONFIG_PREEMPT=y$' .config
-  grep -Eq '^CONFIG_DRM_AMDGPU=(y|m)$' .config
+  grep -q '^CONFIG_DRM_AMDGPU=m$' .config
   grep -q '^CONFIG_CGROUP_DMEM=y$' .config
   grep -q '^CONFIG_LTO_CLANG_THIN=y$' .config
   grep -Eq '^CONFIG_SENSORS_NCT6687=(y|m)$' .config
