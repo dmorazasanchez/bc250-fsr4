@@ -1,0 +1,145 @@
+pkgbase=linux-bc250-73pre
+pkgname=(linux-bc250-73pre)
+pkgver=7.3pre.2709dd5
+pkgrel=2
+pkgdesc='Experimental Linux 7.3-pre kernel for AMD BC-250/GFX1013 with MastaG patches'
+arch=(x86_64)
+url='https://github.com/dmorazasanchez/bc250-fsr4'
+license=('GPL-2.0-only')
+depends=(coreutils kmod initramfs)
+makedepends=(bc binutils cpio gettext glibc libelf libgcc openssl pahole perl python rust rust-bindgen rust-src tar xxhash xz zlib zstd clang llvm lld)
+options=('!strip' '!debug' '!lto')
+
+_linuxcommit=2709dd5ae32f0828f386327c76bba9f39f63a1c6
+_mastagcommit=0076213def97b8bcfcc6413277b9d543d35bc6ba
+_cachyconfigcommit=bd96a024d179846015f63c027c105a893e252219
+_nctcommit=4864fd681346119cf17417f82934a8ce05d88ff6
+_srcname="linux-${_linuxcommit}"
+_mastagsrc="linux-cachyos-bc250-${_mastagcommit}"
+
+source=(
+  "linux-${_linuxcommit}.tar.gz::https://github.com/torvalds/linux/archive/${_linuxcommit}.tar.gz"
+  "mastag-${_mastagcommit}.tar.gz::https://github.com/MastaG/linux-cachyos-bc250/archive/${_mastagcommit}.tar.gz"
+  "cachyos.config::https://raw.githubusercontent.com/CachyOS/linux-cachyos/${_cachyconfigcommit}/linux-cachyos/config"
+  "nct6687.c::https://raw.githubusercontent.com/Fred78290/nct6687d/${_nctcommit}/nct6687.c"
+)
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+prepare() {
+  cd "$srcdir/$_srcname"
+
+  echo '==> Checking MastaG BC-250 patch series against Linux 7.3-pre...'
+  local p
+  for p in "$srcdir/$_mastagsrc"/patches/linux-cachyos-rc/*.patch; do
+    echo "    dry-run: $(basename "$p")"
+    patch -Np1 --dry-run < "$p"
+  done
+
+  echo '==> Applying MastaG BC-250 patch series...'
+  for p in "$srcdir/$_mastagsrc"/patches/linux-cachyos-rc/*.patch; do
+    echo "    apply: $(basename "$p")"
+    patch -Np1 < "$p"
+  done
+
+  echo '==> Installing pinned nct6687 source...'
+  install -Dm644 "$srcdir/nct6687.c" drivers/hwmon/nct6687.c
+
+  echo '==> Starting from pinned CachyOS desktop/gaming config...'
+  cp "$srcdir/cachyos.config" .config
+
+  # Preserve Linux 7.3's upstream EEVDF scheduler. Do not carry CachyOS BORE/BMQ
+  # into this first experiment: we want the new 7.3 scheduler behavior itself.
+  scripts/config -d SCHED_BORE -d SCHED_ALT -d SCHED_BMQ
+
+  # BC-250 board support from MastaG. Keep AMDGPU modular like CachyOS so the
+  # initramfs can carry amdgpu.ko and its firmware normally.
+  scripts/config -d SENSORS_NCT6683 -m SENSORS_NCT6687
+  scripts/config -e DRM -m DRM_AMDGPU -e HSA_AMD -e DRM_TTM
+
+  # This pinned 7.3 merge-window snapshot has an in-tree build break in the
+  # Cadence MACB/GEM Ethernet driver. BC-250 does not use Cadence MACB/GEM, so
+  # exclude the entire unrelated vendor block instead of patching dead hardware.
+  scripts/config -d NET_VENDOR_CADENCE
+
+  # Gaming/latency-oriented settings retained from the CachyOS philosophy.
+  scripts/config -e HZ_1000 --set-val HZ 1000
+  scripts/config -e PREEMPT -d PREEMPT_LAZY -e PREEMPT_DYNAMIC
+  scripts/config -e SCHED_AUTOGROUP
+  scripts/config -d TRANSPARENT_HUGEPAGE_MADVISE -e TRANSPARENT_HUGEPAGE_ALWAYS
+
+  # Linux 7.3 memory-management path we explicitly want to evaluate.
+  scripts/config -e CGROUPS -e MEMCG -e CGROUP_DMEM
+
+  # Keep ThinLTO from CachyOS, but leave scheduling code upstream.
+  scripts/config -d LTO_NONE -e LTO -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL
+
+  # Co-installable identity: never collide with MastaG's normal kernel.
+  scripts/config --set-str LOCALVERSION '-bc250-73pre'
+  scripts/config -d LOCALVERSION_AUTO
+
+  make LLVM=1 LLVM_IAS=1 olddefconfig
+
+  echo '==> Effective experiment config:'
+  grep -E '^(CONFIG_(HZ|HZ_1000|PREEMPT|PREEMPT_DYNAMIC|SCHED_AUTOGROUP|CGROUP_DMEM|LTO_CLANG_THIN|DRM_AMDGPU|HSA_AMD|SENSORS_NCT6687|TRANSPARENT_HUGEPAGE_ALWAYS)=|# CONFIG_(SCHED_BORE|SCHED_ALT|SCHED_BMQ|NET_VENDOR_CADENCE) is not set)' .config || true
+
+  # Hard requirements: fail CI rather than silently building the wrong experiment.
+  grep -q '^CONFIG_HZ_1000=y$' .config
+  grep -q '^CONFIG_PREEMPT=y$' .config
+  grep -q '^CONFIG_DRM_AMDGPU=m$' .config
+  grep -q '^CONFIG_CGROUP_DMEM=y$' .config
+  grep -q '^CONFIG_LTO_CLANG_THIN=y$' .config
+  grep -Eq '^CONFIG_SENSORS_NCT6687=(y|m)$' .config
+  grep -q '^# CONFIG_NET_VENDOR_CADENCE is not set$' .config
+
+  make -s LLVM=1 LLVM_IAS=1 kernelrelease > version
+  echo "==> Prepared kernel release: $(<version)"
+}
+
+build() {
+  cd "$srcdir/$_srcname"
+
+  # CachyOS normally gets O3 from its own Kconfig patch, absent in vanilla
+  # upstream. KCFLAGS keeps the aggressive build without importing old 7.2
+  # scheduler patches. -mtune=znver2 tunes scheduling for the BC-250 Zen 2 CPU
+  # without raising the x86 ISA baseline or enabling SIMD in kernel code.
+  export KCFLAGS='-O3 -mtune=znver2'
+
+  # Do not force -j$(nproc) here. Respect MAKEFLAGS from the build host so CI
+  # can cap memory use while a local BC-250 build can choose its own job count.
+  make LLVM=1 LLVM_IAS=1 all
+}
+
+package() {
+  cd "$srcdir/$_srcname"
+  local kernver
+  kernver="$(<version)"
+  local modulesdir="$pkgdir/usr/lib/modules/$kernver"
+
+  echo '==> Installing kernel image...'
+  install -Dm644 "$(make -s image_name)" "$modulesdir/vmlinuz"
+
+  # Used by mkinitcpio/Arch kernel hooks to keep this kernel independent.
+  echo "$pkgbase" | install -Dm644 /dev/stdin "$modulesdir/pkgbase"
+
+  echo '==> Installing modules...'
+  ZSTD_CLEVEL=19 make LLVM=1 LLVM_IAS=1 \
+    INSTALL_MOD_PATH="$pkgdir/usr" \
+    INSTALL_MOD_STRIP=1 \
+    DEPMOD=/doesnt/exist \
+    modules_install
+
+  rm -f "$modulesdir/build" "$modulesdir/source"
+
+  install -Dm644 .config "$modulesdir/config"
+  install -Dm644 System.map "$modulesdir/System.map"
+
+  # Exact provenance for later A/B testing and rollback diagnosis.
+  {
+    echo "linux_commit=$_linuxcommit"
+    echo "mastag_commit=$_mastagcommit"
+    echo "cachyos_config_commit=$_cachyconfigcommit"
+    echo "nct6687_commit=$_nctcommit"
+    echo 'scheduler=upstream-eevdf'
+    echo 'kcflags=-O3 -mtune=znver2'
+  } | install -Dm644 /dev/stdin "$modulesdir/bc250-73pre-buildinfo"
+}
