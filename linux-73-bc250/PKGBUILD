@@ -55,6 +55,11 @@ prepare() {
   scripts/config -d SENSORS_NCT6683 -m SENSORS_NCT6687
   scripts/config -e DRM -e DRM_AMDGPU -e HSA_AMD -e DRM_TTM
 
+  # This pinned 7.3 merge-window snapshot has an in-tree build break in the
+  # Cadence MACB/GEM Ethernet driver. BC-250 does not use Cadence MACB/GEM, so
+  # exclude the entire unrelated vendor block instead of patching dead hardware.
+  scripts/config -d NET_VENDOR_CADENCE
+
   # Gaming/latency-oriented settings retained from the CachyOS philosophy.
   scripts/config -e HZ_1000 --set-val HZ 1000
   scripts/config -e PREEMPT -d PREEMPT_LAZY -e PREEMPT_DYNAMIC
@@ -74,7 +79,7 @@ prepare() {
   make LLVM=1 LLVM_IAS=1 olddefconfig
 
   echo '==> Effective experiment config:'
-  grep -E '^(CONFIG_(HZ|HZ_1000|PREEMPT|PREEMPT_DYNAMIC|SCHED_AUTOGROUP|CGROUP_DMEM|LTO_CLANG_THIN|DRM_AMDGPU|HSA_AMD|SENSORS_NCT6687|TRANSPARENT_HUGEPAGE_ALWAYS)=|# CONFIG_(SCHED_BORE|SCHED_ALT|SCHED_BMQ) is not set)' .config || true
+  grep -E '^(CONFIG_(HZ|HZ_1000|PREEMPT|PREEMPT_DYNAMIC|SCHED_AUTOGROUP|CGROUP_DMEM|LTO_CLANG_THIN|DRM_AMDGPU|HSA_AMD|SENSORS_NCT6687|TRANSPARENT_HUGEPAGE_ALWAYS)=|# CONFIG_(SCHED_BORE|SCHED_ALT|SCHED_BMQ|NET_VENDOR_CADENCE) is not set)' .config || true
 
   # Hard requirements: fail CI rather than silently building the wrong experiment.
   grep -q '^CONFIG_HZ_1000=y$' .config
@@ -83,6 +88,7 @@ prepare() {
   grep -q '^CONFIG_CGROUP_DMEM=y$' .config
   grep -q '^CONFIG_LTO_CLANG_THIN=y$' .config
   grep -Eq '^CONFIG_SENSORS_NCT6687=(y|m)$' .config
+  grep -q '^# CONFIG_NET_VENDOR_CADENCE is not set$' .config
 
   make -s LLVM=1 LLVM_IAS=1 kernelrelease > version
   echo "==> Prepared kernel release: $(<version)"
