@@ -10,7 +10,7 @@ diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
           options->has_udot_4x8 = true;
           options->has_udot_4x8_sat = true;
        } else if (probe && !strcmp(probe, "dot2")) {
-@@ -846,6 +846,53 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
+@@ -846,6 +846,55 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
     return true;
  }
  
@@ -66,7 +66,7 @@ diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
  static bool
  bc250_lower_dense_sdot4x8(nir_shader *nir)
  {
-@@ -904,7 +951,11 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct
+@@ -904,7 +953,11 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct
        NIR_PASS(_, nir, nir_lower_vars_to_ssa);
  
        if (compiler_info->debug.family == CHIP_GFX1013 &&
