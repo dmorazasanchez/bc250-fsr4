@@ -1,36 +1,39 @@
 #define _GNU_SOURCE
-#include <dlfcn.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
-/* Diagnostic-only BC-250 RGP pstate bypass.
+/* EXP109 v3: intercept the actual libc ioctl boundary.
  *
- * First try the public libdrm-amdgpu ABI.  Some libdrm builds bind that symbol
- * internally, so also interpose the next layer down: drmCommandWriteRead().
- * For DRM_AMDGPU_CTX (command index 0x02), fake success only for stable-pstate
- * GET/SET ops 5/6.  All other DRM commands are forwarded unchanged.
+ * libdrm-amdgpu may bind its own wrappers internally, so LD_PRELOAD of
+ * amdgpu_cs_ctx_stable_pstate() or drmCommandWriteRead() is not reliable.
+ * Every DRM request ultimately crosses ioctl(2), which is the stable boundary.
+ *
+ * We short-circuit only the AMDGPU context ioctl (DRM command index 0x02),
+ * and only AMDGPU_CTX_OP_GET/SET_STABLE_PSTATE (ops 5/6). All other ioctls
+ * are forwarded directly to the real kernel syscall.
  */
-typedef void *amdgpu_context_handle;
-typedef int (*stable_pstate_fn)(amdgpu_context_handle, uint32_t, uint32_t, uint32_t *);
-typedef int (*drm_cmd_wr_fn)(int, unsigned long, void *, unsigned long);
 
 enum {
-   DRM_AMDGPU_CTX = 0x02,
-   AMDGPU_CTX_OP_GET_STABLE_PSTATE = 5,
-   AMDGPU_CTX_OP_SET_STABLE_PSTATE = 6,
-   AMDGPU_CTX_STABLE_PSTATE_NONE = 0,
+   DRM_COMMAND_BASE_LOCAL = 0x40,
+   DRM_AMDGPU_CTX_LOCAL = 0x02,
+   AMDGPU_CTX_OP_GET_STABLE_PSTATE_LOCAL = 5,
+   AMDGPU_CTX_OP_SET_STABLE_PSTATE_LOCAL = 6,
+   AMDGPU_CTX_STABLE_PSTATE_NONE_LOCAL = 0,
 };
 
-struct drm_amdgpu_ctx_in_compat {
+struct drm_amdgpu_ctx_in_local {
    uint32_t op;
    uint32_t flags;
    uint32_t ctx_id;
    int32_t priority;
 };
 
-union drm_amdgpu_ctx_out_compat {
+union drm_amdgpu_ctx_out_local {
    struct {
       uint32_t ctx_id;
       uint32_t pad;
@@ -46,10 +49,13 @@ union drm_amdgpu_ctx_out_compat {
    } pstate;
 };
 
-union drm_amdgpu_ctx_compat {
-   struct drm_amdgpu_ctx_in_compat in;
-   union drm_amdgpu_ctx_out_compat out;
+union drm_amdgpu_ctx_local {
+   struct drm_amdgpu_ctx_in_local in;
+   union drm_amdgpu_ctx_out_local out;
 };
+
+_Static_assert(sizeof(union drm_amdgpu_ctx_local) == 16,
+               "unexpected drm_amdgpu_ctx ABI size");
 
 static int
 verbose_enabled(void)
@@ -59,68 +65,48 @@ verbose_enabled(void)
 }
 
 int
-amdgpu_cs_ctx_stable_pstate(amdgpu_context_handle context, uint32_t op,
-                            uint32_t flags, uint32_t *out_flags)
+ioctl(int fd, unsigned long request, ...)
 {
-   (void)context;
+   va_list ap;
+   void *arg;
 
-   if (op == AMDGPU_CTX_OP_GET_STABLE_PSTATE) {
-      if (out_flags)
-         *out_flags = AMDGPU_CTX_STABLE_PSTATE_NONE;
-      if (verbose_enabled())
-         fprintf(stderr, "bc250-rgp-shim: ABI bypass GET_STABLE_PSTATE -> NONE\n");
-      return 0;
-   }
+   va_start(ap, request);
+   arg = va_arg(ap, void *);
+   va_end(ap);
 
-   if (op == AMDGPU_CTX_OP_SET_STABLE_PSTATE) {
-      if (verbose_enabled())
-         fprintf(stderr, "bc250-rgp-shim: ABI bypass SET_STABLE_PSTATE flags=%u\n", flags);
-      return 0;
-   }
+   /* drmCommandWriteRead(DRM_AMDGPU_CTX, ...) builds an _IOWR request with:
+    *   type = 'd'
+    *   nr   = DRM_COMMAND_BASE + DRM_AMDGPU_CTX = 0x42
+    *   size = sizeof(union drm_amdgpu_ctx) = 16
+    */
+   if (arg && _IOC_TYPE(request) == 'd' &&
+       _IOC_NR(request) == DRM_COMMAND_BASE_LOCAL + DRM_AMDGPU_CTX_LOCAL &&
+       _IOC_SIZE(request) == sizeof(union drm_amdgpu_ctx_local)) {
+      union drm_amdgpu_ctx_local *ctx = arg;
+      const uint32_t op = ctx->in.op;
 
-   static stable_pstate_fn real_fn;
-   if (!real_fn)
-      real_fn = (stable_pstate_fn)dlsym(RTLD_NEXT, "amdgpu_cs_ctx_stable_pstate");
-
-   if (!real_fn) {
-      fprintf(stderr, "bc250-rgp-shim: failed to resolve real amdgpu_cs_ctx_stable_pstate\n");
-      return -1;
-   }
-
-   return real_fn(context, op, flags, out_flags);
-}
-
-int
-drmCommandWriteRead(int fd, unsigned long drmCommandIndex, void *data, unsigned long size)
-{
-   if (drmCommandIndex == DRM_AMDGPU_CTX && data && size >= sizeof(union drm_amdgpu_ctx_compat)) {
-      union drm_amdgpu_ctx_compat *ctx = (union drm_amdgpu_ctx_compat *)data;
-
-      if (ctx->in.op == AMDGPU_CTX_OP_GET_STABLE_PSTATE) {
-         memset(&ctx->out, 0, sizeof(ctx->out));
-         ctx->out.pstate.flags = AMDGPU_CTX_STABLE_PSTATE_NONE;
+      if (op == AMDGPU_CTX_OP_GET_STABLE_PSTATE_LOCAL) {
+         const uint32_t ctx_id = ctx->in.ctx_id;
+         ctx->out.pstate.flags = AMDGPU_CTX_STABLE_PSTATE_NONE_LOCAL;
+         ctx->out.pstate.pad = 0;
          if (verbose_enabled())
-            fprintf(stderr, "bc250-rgp-shim: DRM bypass GET_STABLE_PSTATE ctx=%u -> NONE\n",
-                    ctx->in.ctx_id);
+            fprintf(stderr,
+                    "bc250-rgp-shim: ioctl bypass GET_STABLE_PSTATE ctx=%u -> NONE\n",
+                    ctx_id);
          return 0;
       }
 
-      if (ctx->in.op == AMDGPU_CTX_OP_SET_STABLE_PSTATE) {
+      if (op == AMDGPU_CTX_OP_SET_STABLE_PSTATE_LOCAL) {
          if (verbose_enabled())
-            fprintf(stderr, "bc250-rgp-shim: DRM bypass SET_STABLE_PSTATE ctx=%u flags=%u\n",
+            fprintf(stderr,
+                    "bc250-rgp-shim: ioctl bypass SET_STABLE_PSTATE ctx=%u flags=%u\n",
                     ctx->in.ctx_id, ctx->in.flags);
          return 0;
       }
    }
 
-   static drm_cmd_wr_fn real_fn;
-   if (!real_fn)
-      real_fn = (drm_cmd_wr_fn)dlsym(RTLD_NEXT, "drmCommandWriteRead");
-
-   if (!real_fn) {
-      fprintf(stderr, "bc250-rgp-shim: failed to resolve real drmCommandWriteRead\n");
-      return -1;
-   }
-
-   return real_fn(fd, drmCommandIndex, data, size);
+   /* Bypass libc symbol lookup entirely for the forwarding path. This avoids
+    * recursion and works even when libdrm hides/binds its helper symbols.
+    */
+   return (int)syscall(SYS_ioctl, fd, request, arg);
 }
