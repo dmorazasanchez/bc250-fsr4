@@ -27,7 +27,8 @@ else
     meson setup "$BD" "$PWD" "${MESON_ARGS[@]}"
 fi
 
-meson compile -C "$BD"
+# EXP105 needs only the private RADV ICD. Avoid compiling all Mesa/Gallium.
+ninja -C "$BD" src/amd/vulkan/libvulkan_radeon.so
 mkdir -p "$(dirname "$OUT")"
 cp "$BD/src/amd/vulkan/libvulkan_radeon.so" "$OUT"
 sha256sum "$OUT" > "$OUT.sha256"
