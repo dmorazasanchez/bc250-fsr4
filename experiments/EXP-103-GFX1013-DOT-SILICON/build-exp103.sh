@@ -31,7 +31,15 @@ fi
 ninja -C "$BD" src/amd/vulkan/libvulkan_radeon.so
 mkdir -p "$(dirname "$OUT")"
 cp "$BD/src/amd/vulkan/libvulkan_radeon.so" "$OUT"
-sha256sum "$OUT" > "$OUT.sha256"
+
+# Keep the checksum relocatable: CI builds inside /workspace, while the copied
+# artifact is later checked from a GitHub workspace or the BC-250 filesystem.
+OUT_DIR="$(dirname "$OUT")"
+OUT_NAME="$(basename "$OUT")"
+(
+    cd "$OUT_DIR"
+    sha256sum "$OUT_NAME" > "$OUT_NAME.sha256"
+)
 
 echo "EXP103 probe driver: $OUT"
 sha256sum "$OUT"
