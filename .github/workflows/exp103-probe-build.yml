@@ -32,14 +32,15 @@ jobs:
       - name: Static probe-kit validation
         run: |
           set -euxo pipefail
-          test -s experiments/EXP-103-GFX1013-DOT-SILICON/libvulkan_radeon-exp103.so
-          sha256sum -c experiments/EXP-103-GFX1013-DOT-SILICON/libvulkan_radeon-exp103.so.sha256
-          grep -q 'BC250_DOT_PROBE' experiments/EXP-103-GFX1013-DOT-SILICON/exp103-gfx1013-dot-probe.patch
-          grep -q 'v_dot4_u32_u8' experiments/EXP-103-GFX1013-DOT-SILICON/run-exp103-4x8.sh
-          grep -q 'v_dot2_i32_i16' experiments/EXP-103-GFX1013-DOT-SILICON/run-exp103-dot2.sh
+          EXP=experiments/EXP-103-GFX1013-DOT-SILICON
+          test -s "$EXP/libvulkan_radeon-exp103.so"
+          (cd "$EXP" && sha256sum -c libvulkan_radeon-exp103.so.sha256)
+          grep -q 'BC250_DOT_PROBE' "$EXP/exp103-gfx1013-dot-probe.patch"
+          grep -q 'v_dot4_u32_u8' "$EXP/run-exp103-4x8.sh"
+          grep -q 'v_dot2_i32_i16' "$EXP/run-exp103-dot2.sh"
           python3 -m py_compile \
-            experiments/EXP-103-GFX1013-DOT-SILICON/gen_dot2_kernels.py \
-            experiments/EXP-103-GFX1013-DOT-SILICON/make_bench_dot2.py
+            "$EXP/gen_dot2_kernels.py" \
+            "$EXP/make_bench_dot2.py"
 
       - name: Package probe
         run: |
