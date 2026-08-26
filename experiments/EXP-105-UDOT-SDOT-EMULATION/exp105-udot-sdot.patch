@@ -1,0 +1,78 @@
+diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
+--- a/src/amd/vulkan/radv_shader.c
++++ b/src/amd/vulkan/radv_shader.c
+@@ -77,7 +77,7 @@ get_nir_options_for_stage(struct radv_compiler_info *compiler_info, mesa_shader_stage stage)
+       if (probe && !strcmp(probe, "sdot4")) {
+          options->has_sdot_4x8 = true;
+          options->has_sdot_4x8_sat = true;
+-      } else if (probe && !strcmp(probe, "udot4")) {
++      } else if (probe && (!strcmp(probe, "udot4") || !strcmp(probe, "udot-sdot"))) {
+          options->has_udot_4x8 = true;
+          options->has_udot_4x8_sat = true;
+       } else if (probe && !strcmp(probe, "dot2")) {
+@@ -846,6 +846,46 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
+    return true;
+ }
+ 
++static bool
++bc250_probe_lower_sdot4x8_to_udot4_one(nir_builder *b, nir_alu_instr *alu, void *data)
++{
++   (void)data;
++
++   if (alu->op != nir_op_sdot_4x8_iadd)
++      return false;
++
++   b->cursor = nir_before_instr(&alu->instr);
++
++   nir_def *a = nir_ssa_for_alu_src(b, alu, 0);
++   nir_def *bv = nir_ssa_for_alu_src(b, alu, 1);
++   nir_def *c = nir_ssa_for_alu_src(b, alu, 2);
++   nir_def *zero = nir_imm_int(b, 0);
++
++   /* Bias every signed byte into [0,255].  XOR 0x80 is exactly +128
++    * modulo 256 for an int8 byte representation.
++    */
++   nir_def *au = nir_ixor_imm(b, a, 0x80808080u);
++   nir_def *bu = nir_ixor_imm(b, bv, 0x80808080u);
++
++   /* Exact identity for four signed bytes:
++    *   sdot(a,b) = udot(au,bu)
++    *             - 128 * (sum_bytes(au) + sum_bytes(bu))
++    *             + 4 * 128 * 128.
++    *
++    * nir_msad_4x8(x, 0, 0) is the packed-byte horizontal sum here:
++    * every non-zero x byte contributes abs(x-0), while a zero byte
++    * contributes zero as well.
++    */
++   nir_def *dot = nir_udot_4x8_uadd(b, au, bu, zero);
++   nir_def *sum_a = nir_msad_4x8(b, au, zero, zero);
++   nir_def *sum_b = nir_msad_4x8(b, bu, zero, zero);
++   nir_def *corr = nir_ishl_imm(b, nir_iadd(b, sum_a, sum_b), 7);
++   nir_def *r = nir_isub(b, dot, corr);
++   r = nir_iadd_imm(b, r, 65536);
++   r = nir_iadd(b, r, c);
++
++   nir_def_replace(&alu->def, r);
++   return true;
++}
++
+ static bool
+ bc250_lower_dense_sdot4x8(nir_shader *nir)
+ {
+@@ -904,7 +944,13 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct
+       NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+ 
+       if (compiler_info->debug.family == CHIP_GFX1013 &&
+           nir->info.stage == MESA_SHADER_COMPUTE) {
+-         NIR_PASS(_, nir, bc250_lower_dense_sdot4x8);
++         const char *dot_probe = getenv("BC250_DOT_PROBE");
++         if (dot_probe && !strcmp(dot_probe, "udot-sdot")) {
++            NIR_PASS(_, nir, nir_shader_alu_pass,
++                     bc250_probe_lower_sdot4x8_to_udot4_one,
++                     nir_metadata_control_flow, NULL);
++         } else {
++            NIR_PASS(_, nir, bc250_lower_dense_sdot4x8);
++         }
+ 
+          /* EXP-042B: preserve every remaining signed packed SDot through
+           * one full NIR optimization round, then restore real GFX1013
