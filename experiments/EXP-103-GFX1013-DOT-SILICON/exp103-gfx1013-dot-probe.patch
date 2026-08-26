@@ -1,0 +1,43 @@
+diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
+--- a/src/amd/vulkan/radv_shader.c
++++ b/src/amd/vulkan/radv_shader.c
+@@ -13,6 +13,8 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <stdlib.h>
++#include <string.h>
+ #include "radv_shader.h"
+ #include "meta/radv_meta.h"
+ #include "nir/nir.h"
+@@ -63,6 +65,31 @@ get_nir_options_for_stage(struct radv_compiler_info *compiler_info, mesa_shader_stage stage)
+ 
+    ac_nir_set_options(compiler_info->ac, compiler_info->key.use_llvm, options);
+ 
++   /* EXP-103: raw GFX1013 silicon probe.
++    *
++    * GFX1013 does NOT advertise the AMD integer-dot feature family.  Do not
++    * use the normal has_accelerated_dot_product bit here because it enables
++    * several unrelated paths at once.  Instead, preserve exactly one NIR dot
++    * family at a time so ACO can select the already-existing GFX10 opcode.
++    *
++    * This is diagnostic-only.  It must never be shipped in the normal driver.
++    * Each mode is selected before process start with BC250_DOT_PROBE.
++    */
++   if (compiler_info->debug.family == CHIP_GFX1013 && stage == MESA_SHADER_COMPUTE) {
++      const char *probe = getenv("BC250_DOT_PROBE");
++
++      if (probe && !strcmp(probe, "sdot4")) {
++         options->has_sdot_4x8 = true;
++         options->has_sdot_4x8_sat = true;
++      } else if (probe && !strcmp(probe, "udot4")) {
++         options->has_udot_4x8 = true;
++         options->has_udot_4x8_sat = true;
++      } else if (probe && !strcmp(probe, "dot2")) {
++         options->has_dot_2x16 = true;
++      }
++   }
++
+    if (split_fma) {
+       options->float_mul_add16 |= nir_float_muladd_support_prefers_split;
+       options->float_mul_add32 |= nir_float_muladd_support_prefers_split;
