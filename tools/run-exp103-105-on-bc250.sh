@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u
+set -uo pipefail
 
 BASE="${BASE:-/home/david/fsr4-probes}"
 REPO="https://github.com/dmorazasanchez/bc250-fsr4.git"
@@ -25,31 +25,61 @@ sync_branch() {
     fi
 }
 
+build103() {
+    cd "$EXP103_DIR"
+    if bash experiments/EXP-103-GFX1013-DOT-SILICON/build-exp103-native.sh; then
+        return 0
+    fi
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        echo 'Native EXP103 build failed; retrying reproducible Docker builder.' >&2
+        bash experiments/EXP-103-GFX1013-DOT-SILICON/build-exp103-anywhere.sh
+        return $?
+    fi
+    return 1
+}
+
+build105() {
+    cd "$EXP105_DIR"
+    if bash experiments/EXP-105-UDOT-SDOT-EMULATION/build-exp105-native.sh; then
+        return 0
+    fi
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        echo 'Native EXP105 build failed; retrying reproducible Docker builder.' >&2
+        bash experiments/EXP-105-UDOT-SDOT-EMULATION/build-exp105-anywhere.sh
+        return $?
+    fi
+    return 1
+}
+
 if [ ! -f "$GOD_ICD" ]; then
     echo "Missing immutable CODE GOD ICD: $GOD_ICD" >&2
     exit 2
 fi
-if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-    echo 'Docker is required by the reproducible probe builder and is not available/running.' >&2
-    exit 3
-fi
+for x in git meson ninja gcc python3 spirv-as spirv-val; do
+    if ! command -v "$x" >/dev/null 2>&1; then
+        echo "Missing required command: $x" >&2
+        exit 3
+    fi
+done
 
 say '=== BC250 FSR4 INTEGER-DOT SILICON CAMPAIGN ==='
 say "GOD_ICD=$GOD_ICD"
+say "HOST=$(hostname)"
+say "KERNEL=$(uname -r)"
 
 say '=== SYNC EXP103 ==='
-sync_branch "$EXP103_DIR" exp103-gfx1013-dot-silicon
+sync_branch "$EXP103_DIR" exp103-gfx1013-dot-silicon || exit $?
 
 say '=== BUILD EXP103 ==='
-(
-  cd "$EXP103_DIR"
-  bash experiments/EXP-103-GFX1013-DOT-SILICON/build-exp103-anywhere.sh
-) 2>&1 | tee "$BASE/exp103-build.log"
+set +e
+build103 2>&1 | tee "$BASE/exp103-build.log"
 rc=${PIPESTATUS[0]}
+set -e
 if [ "$rc" -ne 0 ]; then
     say "EXP103_BUILD_FAIL rc=$rc"
     exit "$rc"
 fi
+say 'EXP103_BUILD_OK'
 
 say '=== RUN EXP103 UDOT4/SDOT CONTROL ==='
 set +e
@@ -72,25 +102,26 @@ set -e
 say "EXP103_DOT2_RC=$rc2"
 
 UDOT_OK=0
-if [ -f "$EXP103_DIR/experiments/EXP-103-GFX1013-DOT-SILICON/results-4x8/probe-udot4-mini.rc" ] &&
-   [ "$(cat "$EXP103_DIR/experiments/EXP-103-GFX1013-DOT-SILICON/results-4x8/probe-udot4-mini.rc")" = 0 ] &&
-   grep -q 'v_dot4_u32_u8' "$EXP103_DIR/experiments/EXP-103-GFX1013-DOT-SILICON/results-4x8/probe-udot4-mini.isa" 2>/dev/null; then
+R4="$EXP103_DIR/experiments/EXP-103-GFX1013-DOT-SILICON/results-4x8"
+if [ -f "$R4/probe-udot4-mini.rc" ] &&
+   [ "$(cat "$R4/probe-udot4-mini.rc")" = 0 ] &&
+   grep -q 'v_dot4_u32_u8' "$R4/probe-udot4-mini.isa" 2>/dev/null; then
     UDOT_OK=1
 fi
 say "UDOT4_NATIVE_CORRECT=$UDOT_OK"
 
 if [ "$UDOT_OK" -eq 1 ]; then
     say '=== UDOT SURVIVED: SYNC + BUILD EXP105 ==='
-    sync_branch "$EXP105_DIR" exp105-udot-sdot-emulation
-    (
-      cd "$EXP105_DIR"
-      bash experiments/EXP-105-UDOT-SDOT-EMULATION/build-exp105-anywhere.sh
-    ) 2>&1 | tee "$BASE/exp105-build.log"
+    sync_branch "$EXP105_DIR" exp105-udot-sdot-emulation || exit $?
+    set +e
+    build105 2>&1 | tee "$BASE/exp105-build.log"
     rc=${PIPESTATUS[0]}
+    set -e
     if [ "$rc" -ne 0 ]; then
         say "EXP105_BUILD_FAIL rc=$rc"
         exit "$rc"
     fi
+    say 'EXP105_BUILD_OK'
 
     say '=== RUN EXACT SIGNED SDOT VIA UDOT ==='
     set +e
@@ -106,8 +137,9 @@ else
 fi
 
 say '=== RESULT MARKERS ==='
-grep -hE 'EXP103 RESULT|UDOT4_|DOT2|NATIVE_SPEEDUP|TIME_REDUCTION|EXP105|PROMOTE|REJECT|verify:' \
+grep -hE 'Known-broken|EXP103 RESULT|UDOT4_|NATIVE_CORRECT|NATIVE_INCORRECT|NATIVE_SPEEDUP|TIME_REDUCTION|EXP105|PROMOTE|REJECT|verify:|median_' \
   "$BASE"/exp103-4x8.log "$BASE"/exp103-dot2.log "$BASE"/exp105-run.log 2>/dev/null | tee -a "$SUMMARY" || true
 
 say "FULL_LOGS=$BASE"
+say "RESULT_FILE=$SUMMARY"
 say 'CAMPAIGN_COMPLETE'
