@@ -15,11 +15,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Compile and inspect ABI interposer
+      - name: Compile and inspect ioctl interposer
         run: |
           set -euxo pipefail
           EXP=experiments/EXP-109-RGP-PSTATE-SHIM
-          gcc -O2 -fPIC -shared -Wall -Wextra -Werror -o "$EXP/libbc250-rgp-pstate-shim.so" "$EXP/bc250-rgp-pstate-shim.c" -ldl
+          gcc -O2 -fPIC -shared -Wall -Wextra -Werror -o "$EXP/libbc250-rgp-pstate-shim.so" "$EXP/bc250-rgp-pstate-shim.c"
           test -s "$EXP/libbc250-rgp-pstate-shim.so"
-          nm -D "$EXP/libbc250-rgp-pstate-shim.so" | grep ' amdgpu_cs_ctx_stable_pstate$'
+          nm -D "$EXP/libbc250-rgp-pstate-shim.so" | grep ' ioctl$'
+          grep -q 'SYS_ioctl' "$EXP/bc250-rgp-pstate-shim.c"
+          grep -q 'GET_STABLE_PSTATE' "$EXP/bc250-rgp-pstate-shim.c"
+          grep -q 'SET_STABLE_PSTATE' "$EXP/bc250-rgp-pstate-shim.c"
           bash -n "$EXP/build-and-test.sh"
