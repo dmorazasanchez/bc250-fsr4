@@ -10,7 +10,7 @@ diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
           options->has_udot_4x8 = true;
           options->has_udot_4x8_sat = true;
        } else if (probe && !strcmp(probe, "dot2")) {
-@@ -846,6 +846,46 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
+@@ -846,6 +846,53 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
     return true;
  }
  
@@ -29,7 +29,7 @@ diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
 +   nir_def *c = nir_ssa_for_alu_src(b, alu, 2);
 +   nir_def *zero = nir_imm_int(b, 0);
 +
-+   /* Bias every signed byte into [0,255].  XOR 0x80 is exactly +128
++   /* Bias every signed byte into [0,255]. XOR 0x80 is exactly +128
 +    * modulo 256 for an int8 byte representation.
 +    */
 +   nir_def *au = nir_ixor_imm(b, a, 0x80808080u);
@@ -56,23 +56,27 @@ diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
 +   return true;
 +}
 +
++static bool
++bc250_probe_lower_sdot4x8_to_udot4(nir_shader *nir)
++{
++   return nir_shader_alu_pass(nir, bc250_probe_lower_sdot4x8_to_udot4_one,
++                              nir_metadata_control_flow, NULL);
++}
++
  static bool
  bc250_lower_dense_sdot4x8(nir_shader *nir)
  {
-@@ -904,7 +944,13 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct
+@@ -904,7 +951,11 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct
        NIR_PASS(_, nir, nir_lower_vars_to_ssa);
  
        if (compiler_info->debug.family == CHIP_GFX1013 &&
            nir->info.stage == MESA_SHADER_COMPUTE) {
 -         NIR_PASS(_, nir, bc250_lower_dense_sdot4x8);
 +         const char *dot_probe = getenv("BC250_DOT_PROBE");
-+         if (dot_probe && !strcmp(dot_probe, "udot-sdot")) {
-+            NIR_PASS(_, nir, nir_shader_alu_pass,
-+                     bc250_probe_lower_sdot4x8_to_udot4_one,
-+                     nir_metadata_control_flow, NULL);
-+         } else {
++         if (dot_probe && !strcmp(dot_probe, "udot-sdot"))
++            NIR_PASS(_, nir, bc250_probe_lower_sdot4x8_to_udot4);
++         else
 +            NIR_PASS(_, nir, bc250_lower_dense_sdot4x8);
-+         }
  
           /* EXP-042B: preserve every remaining signed packed SDot through
            * one full NIR optimization round, then restore real GFX1013
