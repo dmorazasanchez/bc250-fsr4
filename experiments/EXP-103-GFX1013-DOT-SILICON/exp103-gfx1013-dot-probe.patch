@@ -10,7 +10,7 @@ diff --git a/src/amd/vulkan/radv_shader.c b/src/amd/vulkan/radv_shader.c
  #include "radv_shader.h"
  #include "meta/radv_meta.h"
  #include "nir/nir.h"
-@@ -63,6 +65,31 @@ get_nir_options_for_stage(struct radv_compiler_info *compiler_info, mesa_shader_stage stage)
+@@ -63,6 +65,30 @@ get_nir_options_for_stage(struct radv_compiler_info *compiler_info, mesa_shader_stage stage)
  
     ac_nir_set_options(compiler_info->ac, compiler_info->key.use_llvm, options);
  
