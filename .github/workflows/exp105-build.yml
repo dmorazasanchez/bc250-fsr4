@@ -31,12 +31,13 @@ jobs:
       - name: Validate exact reconstruction patch
         run: |
           set -euxo pipefail
-          test -s experiments/EXP-105-UDOT-SDOT-EMULATION/libvulkan_radeon-exp105.so
-          sha256sum -c experiments/EXP-105-UDOT-SDOT-EMULATION/libvulkan_radeon-exp105.so.sha256
-          grep -q 'nir_udot_4x8_uadd' experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch
-          grep -q 'nir_msad_4x8' experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch
-          grep -q '65536' experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch
-          grep -q 'UDOT4_CORRECT' experiments/EXP-105-UDOT-SDOT-EMULATION/run-exp105.sh
+          EXP=experiments/EXP-105-UDOT-SDOT-EMULATION
+          test -s "$EXP/libvulkan_radeon-exp105.so"
+          (cd "$EXP" && sha256sum -c libvulkan_radeon-exp105.so.sha256)
+          grep -q 'nir_udot_4x8_uadd' "$EXP/exp105-udot-sdot.patch"
+          grep -q 'nir_msad_4x8' "$EXP/exp105-udot-sdot.patch"
+          grep -q '65536' "$EXP/exp105-udot-sdot.patch"
+          grep -q 'UDOT4_CORRECT' "$EXP/run-exp105.sh"
 
       - name: Package EXP105
         run: |
