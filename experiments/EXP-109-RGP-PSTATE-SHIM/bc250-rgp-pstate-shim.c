@@ -3,21 +3,52 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-/* libdrm public ABI:
- *   int amdgpu_cs_ctx_stable_pstate(amdgpu_context_handle context,
- *                                    uint32_t op, uint32_t flags,
- *                                    uint32_t *out_flags);
- * amdgpu_context_handle is an opaque pointer.  Keep this shim independent of
- * libdrm development headers so it can be built on the BC-250 with plain gcc.
+/* Diagnostic-only BC-250 RGP pstate bypass.
+ *
+ * First try the public libdrm-amdgpu ABI.  Some libdrm builds bind that symbol
+ * internally, so also interpose the next layer down: drmCommandWriteRead().
+ * For DRM_AMDGPU_CTX (command index 0x02), fake success only for stable-pstate
+ * GET/SET ops 5/6.  All other DRM commands are forwarded unchanged.
  */
 typedef void *amdgpu_context_handle;
 typedef int (*stable_pstate_fn)(amdgpu_context_handle, uint32_t, uint32_t, uint32_t *);
+typedef int (*drm_cmd_wr_fn)(int, unsigned long, void *, unsigned long);
 
 enum {
+   DRM_AMDGPU_CTX = 0x02,
    AMDGPU_CTX_OP_GET_STABLE_PSTATE = 5,
    AMDGPU_CTX_OP_SET_STABLE_PSTATE = 6,
    AMDGPU_CTX_STABLE_PSTATE_NONE = 0,
+};
+
+struct drm_amdgpu_ctx_in_compat {
+   uint32_t op;
+   uint32_t flags;
+   uint32_t ctx_id;
+   int32_t priority;
+};
+
+union drm_amdgpu_ctx_out_compat {
+   struct {
+      uint32_t ctx_id;
+      uint32_t pad;
+   } alloc;
+   struct {
+      uint64_t flags;
+      uint32_t hangs;
+      uint32_t reset_status;
+   } state;
+   struct {
+      uint32_t flags;
+      uint32_t pad;
+   } pstate;
+};
+
+union drm_amdgpu_ctx_compat {
+   struct drm_amdgpu_ctx_in_compat in;
+   union drm_amdgpu_ctx_out_compat out;
 };
 
 static int
@@ -33,25 +64,17 @@ amdgpu_cs_ctx_stable_pstate(amdgpu_context_handle context, uint32_t op,
 {
    (void)context;
 
-   /* GFX1013/BC-250 rejects every stable-pstate SET request used by RADV
-    * SQTT/RGP initialization.  The pstate is for clock reproducibility, not
-    * for programming SQTT itself.  Pretend GET/SET succeeded and report NONE;
-    * the user's existing BC-250 governor remains in control of clocks.
-    *
-    * This library is diagnostic-only and must only be LD_PRELOADed for RGP
-    * capture.  It does not modify CODE GOD or system libdrm.
-    */
    if (op == AMDGPU_CTX_OP_GET_STABLE_PSTATE) {
       if (out_flags)
          *out_flags = AMDGPU_CTX_STABLE_PSTATE_NONE;
       if (verbose_enabled())
-         fprintf(stderr, "bc250-rgp-shim: bypass GET_STABLE_PSTATE -> NONE\n");
+         fprintf(stderr, "bc250-rgp-shim: ABI bypass GET_STABLE_PSTATE -> NONE\n");
       return 0;
    }
 
    if (op == AMDGPU_CTX_OP_SET_STABLE_PSTATE) {
       if (verbose_enabled())
-         fprintf(stderr, "bc250-rgp-shim: bypass SET_STABLE_PSTATE flags=%u\n", flags);
+         fprintf(stderr, "bc250-rgp-shim: ABI bypass SET_STABLE_PSTATE flags=%u\n", flags);
       return 0;
    }
 
@@ -65,4 +88,39 @@ amdgpu_cs_ctx_stable_pstate(amdgpu_context_handle context, uint32_t op,
    }
 
    return real_fn(context, op, flags, out_flags);
+}
+
+int
+drmCommandWriteRead(int fd, unsigned long drmCommandIndex, void *data, unsigned long size)
+{
+   if (drmCommandIndex == DRM_AMDGPU_CTX && data && size >= sizeof(union drm_amdgpu_ctx_compat)) {
+      union drm_amdgpu_ctx_compat *ctx = (union drm_amdgpu_ctx_compat *)data;
+
+      if (ctx->in.op == AMDGPU_CTX_OP_GET_STABLE_PSTATE) {
+         memset(&ctx->out, 0, sizeof(ctx->out));
+         ctx->out.pstate.flags = AMDGPU_CTX_STABLE_PSTATE_NONE;
+         if (verbose_enabled())
+            fprintf(stderr, "bc250-rgp-shim: DRM bypass GET_STABLE_PSTATE ctx=%u -> NONE\n",
+                    ctx->in.ctx_id);
+         return 0;
+      }
+
+      if (ctx->in.op == AMDGPU_CTX_OP_SET_STABLE_PSTATE) {
+         if (verbose_enabled())
+            fprintf(stderr, "bc250-rgp-shim: DRM bypass SET_STABLE_PSTATE ctx=%u flags=%u\n",
+                    ctx->in.ctx_id, ctx->in.flags);
+         return 0;
+      }
+   }
+
+   static drm_cmd_wr_fn real_fn;
+   if (!real_fn)
+      real_fn = (drm_cmd_wr_fn)dlsym(RTLD_NEXT, "drmCommandWriteRead");
+
+   if (!real_fn) {
+      fprintf(stderr, "bc250-rgp-shim: failed to resolve real drmCommandWriteRead\n");
+      return -1;
+   }
+
+   return real_fn(fd, drmCommandIndex, data, size);
 }
