@@ -51,6 +51,17 @@ build105() {
     return 1
 }
 
+publish_result() {
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        if gh pr comment 6 --repo dmorazasanchez/bc250-fsr4 --body-file "$SUMMARY" >/dev/null 2>&1; then
+            echo 'RESULT_PUBLISHED_PR=6'
+            return 0
+        fi
+    fi
+    echo "RESULT_NOT_PUBLISHED_LOCAL_ONLY=$SUMMARY"
+    return 0
+}
+
 if [ ! -f "$GOD_ICD" ]; then
     echo "Missing immutable CODE GOD ICD: $GOD_ICD" >&2
     exit 2
@@ -77,6 +88,7 @@ rc=${PIPESTATUS[0]}
 set -e
 if [ "$rc" -ne 0 ]; then
     say "EXP103_BUILD_FAIL rc=$rc"
+    publish_result
     exit "$rc"
 fi
 say 'EXP103_BUILD_OK'
@@ -119,6 +131,7 @@ if [ "$UDOT_OK" -eq 1 ]; then
     set -e
     if [ "$rc" -ne 0 ]; then
         say "EXP105_BUILD_FAIL rc=$rc"
+        publish_result
         exit "$rc"
     fi
     say 'EXP105_BUILD_OK'
@@ -143,3 +156,4 @@ grep -hE 'Known-broken|EXP103 RESULT|UDOT4_|NATIVE_CORRECT|NATIVE_INCORRECT|NATI
 say "FULL_LOGS=$BASE"
 say "RESULT_FILE=$SUMMARY"
 say 'CAMPAIGN_COMPLETE'
+publish_result
