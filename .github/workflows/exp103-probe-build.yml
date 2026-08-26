@@ -38,9 +38,11 @@ jobs:
           grep -q 'BC250_DOT_PROBE' "$EXP/exp103-gfx1013-dot-probe.patch"
           grep -q 'v_dot4_u32_u8' "$EXP/run-exp103-4x8.sh"
           grep -q 'v_dot2_i32_i16' "$EXP/run-exp103-dot2.sh"
+          bash -n "$EXP/run-exp103b-semantics.sh"
           python3 -m py_compile \
             "$EXP/gen_dot2_kernels.py" \
-            "$EXP/make_bench_dot2.py"
+            "$EXP/make_bench_dot2.py" \
+            "$EXP/make_bench_semantics.py"
 
       - name: Package probe
         run: |
@@ -49,8 +51,10 @@ jobs:
           cp experiments/EXP-103-GFX1013-DOT-SILICON/libvulkan_radeon-exp103.so* artifacts/EXP103/
           cp experiments/EXP-103-GFX1013-DOT-SILICON/run-exp103-4x8.sh artifacts/EXP103/
           cp experiments/EXP-103-GFX1013-DOT-SILICON/run-exp103-dot2.sh artifacts/EXP103/
+          cp experiments/EXP-103-GFX1013-DOT-SILICON/run-exp103b-semantics.sh artifacts/EXP103/
           cp experiments/EXP-103-GFX1013-DOT-SILICON/gen_dot2_kernels.py artifacts/EXP103/
           cp experiments/EXP-103-GFX1013-DOT-SILICON/make_bench_dot2.py artifacts/EXP103/
+          cp experiments/EXP-103-GFX1013-DOT-SILICON/make_bench_semantics.py artifacts/EXP103/
           cp experiments/EXP-103-GFX1013-DOT-SILICON/README.md artifacts/EXP103/
 
       - uses: actions/upload-artifact@v4
