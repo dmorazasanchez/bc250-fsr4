@@ -13,10 +13,10 @@ command -v vulkaninfo >/dev/null
 
 printf 'Building %s\n' "$OUT"
 gcc -O2 -fPIC -shared -Wall -Wextra -Werror \
-    -o "$OUT" "$HERE/bc250-rgp-pstate-shim.c" -ldl
+    -o "$OUT" "$HERE/bc250-rgp-pstate-shim.c"
 
 printf 'Exported symbol:\n'
-nm -D "$OUT" | grep ' amdgpu_cs_ctx_stable_pstate$'
+nm -D "$OUT" | grep ' ioctl$'
 
 rm -f "$TRIGGER" "$LOG"
 set +e
@@ -35,17 +35,21 @@ cat "$LOG"
 echo "VULKANINFO_RC=$rc"
 
 if [ "$rc" -ne 0 ]; then
-    echo 'EXP109_FAIL: pstate bypass was insufficient; inspect the next SQTT/RGP initialization failure above.' >&2
+    if ! grep -q 'bc250-rgp-shim: ioctl bypass' "$LOG"; then
+        echo 'EXP109_FAIL: ioctl interposer did not see the stable-pstate request.' >&2
+    else
+        echo 'EXP109_NEXT_BLOCKER: stable-pstate ioctl was bypassed; failure is now deeper in SQTT/RGP init.' >&2
+    fi
     exit "$rc"
 fi
 
 if grep -q 'failed to set new pstate' "$LOG"; then
-    echo 'EXP109_FAIL: real stable-pstate SET escaped interposition.' >&2
+    echo 'EXP109_FAIL: stable-pstate SET escaped ioctl interposition.' >&2
     exit 20
 fi
 
-if ! grep -q 'bc250-rgp-shim: bypass' "$LOG"; then
-    echo 'EXP109_FAIL: shim did not intercept libdrm stable-pstate ABI.' >&2
+if ! grep -q 'bc250-rgp-shim: ioctl bypass' "$LOG"; then
+    echo 'EXP109_FAIL: ioctl shim did not intercept stable-pstate GET/SET.' >&2
     exit 21
 fi
 
