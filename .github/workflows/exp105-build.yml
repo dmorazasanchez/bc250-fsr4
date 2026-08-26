@@ -1,0 +1,54 @@
+name: EXP105 exact UDOT-SDOT build
+
+on:
+  pull_request:
+    branches:
+      - v3
+    paths:
+      - 'experiments/EXP-103-GFX1013-DOT-SILICON/**'
+      - 'experiments/EXP-105-UDOT-SDOT-EMULATION/**'
+      - 'bc250-fsr4-v3.patch'
+      - 'Dockerfile'
+      - 'mesa-commit.txt'
+      - '.github/workflows/exp105-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-exp105:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build EXP105 disposable RADV
+        run: |
+          set -euxo pipefail
+          bash experiments/EXP-105-UDOT-SDOT-EMULATION/build-exp105-anywhere.sh
+
+      - name: Validate exact reconstruction patch
+        run: |
+          set -euxo pipefail
+          test -s experiments/EXP-105-UDOT-SDOT-EMULATION/libvulkan_radeon-exp105.so
+          sha256sum -c experiments/EXP-105-UDOT-SDOT-EMULATION/libvulkan_radeon-exp105.so.sha256
+          grep -q 'nir_udot_4x8_uadd' experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch
+          grep -q 'nir_msad_4x8' experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch
+          grep -q '65536' experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch
+          grep -q 'UDOT4_CORRECT' experiments/EXP-105-UDOT-SDOT-EMULATION/run-exp105.sh
+
+      - name: Package EXP105
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts/EXP105
+          cp experiments/EXP-105-UDOT-SDOT-EMULATION/libvulkan_radeon-exp105.so* artifacts/EXP105/
+          cp experiments/EXP-105-UDOT-SDOT-EMULATION/run-exp105.sh artifacts/EXP105/
+          cp experiments/EXP-105-UDOT-SDOT-EMULATION/exp105-udot-sdot.patch artifacts/EXP105/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exp105-udot-sdot-emulation
+          path: artifacts/EXP105/
+          if-no-files-found: error
+          compression-level: 0
