@@ -28,6 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate exact SDOT math
+        run: |
+          set -euxo pipefail
+          python3 experiments/EXP-110-WIDE-FUSED-SDOT/test_math.py
+
       - name: Enable buildx
         uses: docker/setup-buildx-action@v3
 
@@ -59,7 +64,7 @@ jobs:
           SO="$EXP/libvulkan_radeon-exp110-${{ matrix.mode }}.so"
           test -s "$SO"
           (cd "$EXP" && sha256sum -c "$(basename "$SO").sha256")
-          python3 -m py_compile "$EXP/materialize_exp110.py" "$EXP/compare_profiles.py"
+          python3 -m py_compile "$EXP/materialize_exp110.py" "$EXP/compare_profiles.py" "$EXP/test_math.py"
           bash -n "$EXP/build-exp110-all.sh" "$EXP/ci-build-mode.sh"
 
       - uses: actions/upload-artifact@v4
