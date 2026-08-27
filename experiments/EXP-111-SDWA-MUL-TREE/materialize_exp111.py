@@ -158,6 +158,32 @@ def patch_radv(src: Path, mode: str):
     return gate_name
 
 
+def ensure_family_plumbing(src: Path):
+    """Expose radeon_family on Program if this exact GOD source predates that plumbing.
+
+    This is the same tiny plumbing used by our V3 stack: copy options->family
+    into Program during init and add the field beside gfx_level. It changes no
+    codegen by itself; EXP111 only reads it to restrict policy to GFX1013.
+    """
+    irh = src / 'src/amd/compiler/aco_ir.h'
+    t = irh.read_text()
+    if 'enum radeon_family family;' not in t:
+        marker = '   enum amd_gfx_level gfx_level;\n'
+        if marker not in t:
+            raise SystemExit('EXP111: aco_ir.h gfx_level marker not found')
+        t = t.replace(marker, marker + '   enum radeon_family family;\n', 1)
+        irh.write_text(t)
+
+    ircpp = src / 'src/amd/compiler/aco_ir.cpp'
+    t = ircpp.read_text()
+    if 'program->family = options->family;' not in t:
+        marker = '   program->gfx_level = options->gfx_level;\n'
+        if marker not in t:
+            raise SystemExit('EXP111: aco_ir.cpp gfx_level init marker not found')
+        t = t.replace(marker, marker + '   program->family = options->family;\n', 1)
+        ircpp.write_text(t)
+
+
 def patch_aco(src: Path, dense_threshold: int):
     p = src / 'src/amd/compiler/aco_optimizer.cpp'
     t = p.read_text()
@@ -174,9 +200,7 @@ def patch_aco(src: Path, dense_threshold: int):
     init_new = f'''   ctx.program = program;
 
    /* EXP111: identify dot-dense BC-250 compute programs after instruction
-    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24.
-    * Use the exact family identifier; this avoids gfx-level naming/version
-    * ambiguity and prevents the policy from leaking to other Navi10-class GPUs. */
+    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24. */
    if (program->family == CHIP_GFX1013 && program->stage == compute_cs) {{
       unsigned bc250_i24_mul_count = 0;
       for (Block& block : program->blocks) {{
@@ -213,6 +237,7 @@ def main():
     ap.add_argument('--dense-threshold', type=int, default=1024)
     a = ap.parse_args()
     gate = patch_radv(a.source, a.mode)
+    ensure_family_plumbing(a.source)
     patch_aco(a.source, a.dense_threshold)
     print(f'EXP111_MATERIALIZED mode={a.mode} gate={gate} dense_threshold={a.dense_threshold}')
 
