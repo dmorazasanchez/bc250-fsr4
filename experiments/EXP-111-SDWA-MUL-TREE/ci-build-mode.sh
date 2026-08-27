@@ -8,7 +8,7 @@ cd /opt/mesa
 git reset --hard HEAD >/dev/null
 git clean -fdx >/dev/null
 git apply "$WS/bc250-fsr4-v3.patch"
-python3 "$WS/experiments/EXP-111-SDWA-MUL-TREE/materialize_exp111.py" /opt/mesa "$MODE"
+python3 "$WS/experiments/EXP-111-SDWA-MUL-TREE/materialize_exp111.py" /opt/mesa "$MODE" --dense-threshold 1024
 grep -q 'EXP111: preserve four VOP2 i24 multiplies' src/amd/vulkan/radv_shader.c
 grep -q 'bc250_dense_i24' src/amd/compiler/aco_optimizer.cpp
 MESON_ARGS=(-Dbuildtype=release -Dwrap_mode=nodownload -Dvulkan-drivers=amd -Dgallium-drivers=radeonsi -Dllvm=enabled)
