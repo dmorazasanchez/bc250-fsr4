@@ -85,6 +85,43 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
 
 '''
 
+HISTORY_GATE = r'''static bool
+bc250_lower_dense_sdot4x8(nir_shader *nir)
+{
+   struct bc250_dot_density density = {0};
+   nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
+
+   /* EXP110 history-aware wide gate.
+    *
+    * Preserve the two exclusions established by the earlier full64 campaign:
+    *  - low-IMUL 1152/e955: deferred SDot beat dense MAD24 materially.
+    *  - low-control 2304: dense MAD24 reduced resident waves from 6 to 4.
+    *
+    * Keep GOD's known-good 1088/high-IMUL-1152/control-rich-2304 families,
+    * and broaden to 512, ED7/2048, and >2304 reductions.  Newly admitted
+    * 2048+ families use the dual chain to cap dependency depth/lifetimes.
+    * The aggressive serial/dual-wide variants remain as bookends so the
+    * full64 audit can show whether these historical exclusions still matter
+    * after accumulator fusion removes one ALU per dense dot.
+    */
+   const bool safe_1088 = density.sdot == 1088;
+   const bool safe_1152 = density.sdot == 1152 && density.imul >= 100;
+   const bool safe_2304 = density.sdot == 2304 && density.bcsel >= 16;
+
+   const bool add_512 = density.sdot == 512;
+   const bool add_2048 = density.sdot == 2048;
+   const bool add_large = density.sdot > 2304;
+
+   if (!(safe_1088 || safe_1152 || safe_2304 || add_512 || add_2048 || add_large))
+      return false;
+
+   const bool two_chain = safe_1152 || safe_2304 || add_2048 || add_large;
+   return nir_shader_alu_pass(nir, bc250_lower_dense_sdot4x8_one,
+                              nir_metadata_control_flow, (void *)&two_chain);
+}
+
+'''
+
 
 def replace_between(text: str, start: str, end: str, replacement: str) -> str:
     i = text.find(start)
@@ -99,7 +136,7 @@ def replace_between(text: str, start: str, end: str, replacement: str) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("source", type=Path, help="Mesa source root")
-    ap.add_argument("mode", choices=["god-gate-fused", "serial-wide", "dual-wide", "hybrid-wide"])
+    ap.add_argument("mode", choices=["god-gate-fused", "serial-wide", "dual-wide", "hybrid-wide", "history-wide"])
     args = ap.parse_args()
 
     path = args.source / "src/amd/vulkan/radv_shader.c"
@@ -111,7 +148,9 @@ def main() -> None:
     # Preserve every GOD change outside the one SDot lowering helper.
     text = replace_between(text, LOWER_ONE_START, LOWER_GATE_START, FUSED_LOWER)
 
-    if args.mode != "god-gate-fused":
+    if args.mode == "history-wide":
+        text = replace_between(text, LOWER_GATE_START, OPTIMIZE_START, HISTORY_GATE)
+    elif args.mode != "god-gate-fused":
         if args.mode == "serial-wide":
             expr = "false"
         elif args.mode == "dual-wide":
