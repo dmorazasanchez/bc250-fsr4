@@ -131,9 +131,6 @@ def discover_gate(text: str):
 
 def replace_body_preserve_signature(text: str, span, new_body: str):
     s, ob, cb, e = span
-    # Preserve the exact GOD declaration/signature and closing/trailing text.
-    # This is critical because GOD/SATAN currently passes an additional
-    # force_dense_unroll argument while public V3 does not.
     replacement = text[s:ob+1] + new_body + text[cb:e]
     return text[:s] + replacement + text[e:]
 
@@ -145,7 +142,7 @@ def patch_radv(src: Path, mode: str):
     t = t[:hs] + BALANCED_HELPER + t[he:]
 
     gate_name, gate_span = discover_gate(t)
-    if mode == 'history-wide':
+    if mode in ('history-wide', 'surgical-history'):
         t = replace_body_preserve_signature(t, gate_span, HISTORY_BODY)
     elif mode == 'wide':
         t = replace_body_preserve_signature(t, gate_span, WIDE_BODY)
@@ -175,7 +172,7 @@ def ensure_family_plumbing(src: Path):
         ircpp.write_text(t)
 
 
-def patch_aco(src: Path, dense_threshold: int):
+def patch_aco(src: Path, dense_threshold: int, surgical: bool):
     p = src / 'src/amd/compiler/aco_optimizer.cpp'
     t = p.read_text()
     if 'bc250_dense_i24' in t:
@@ -207,26 +204,60 @@ def patch_aco(src: Path, dense_threshold: int):
     t = t.replace(init_old, init_new, 1)
 
     fuse_old = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'
-    fuse_new = '''      if (!ctx.bc250_dense_i24) {
-         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
-      }'''
     if fuse_old not in t:
         raise SystemExit('EXP111: mul24->mad24 optimizer marker not found')
-    t = t.replace(fuse_old, fuse_new, 1)
 
+    if surgical:
+        # match_and_apply_patterns() has already formed the prospective MAD and
+        # back-propagated extract modifiers before this callback executes.
+        # Reject only the candidates whose two multiply operands are signed
+        # byte extracts; those are exactly the MULs that can become dual-source
+        # SDWA sbyte selectors.  All unrelated i24 MUL+ADD contractions keep
+        # GOD/upstream behavior via pop_def_cb().
+        callback = r'''
+bool
+bc250_sdwa_mul24_contract_cb(opt_ctx& ctx, alu_opt_info& info)
+{
+   if (ctx.bc250_dense_i24 && info.operands.size() >= 2) {
+      const SubdwordSel a = info.operands[0].extract[0];
+      const SubdwordSel b = info.operands[1].extract[0];
+      const bool signed_byte_a = a.size() == 1 && a.sign_extend();
+      const bool signed_byte_b = b.size() == 1 && b.sign_extend();
+      if (signed_byte_a && signed_byte_b)
+         return false;
+   }
+
+   return pop_def_cb(ctx, info);
+}
+
+'''
+        # pop_def_cb is defined before combine_instruction in Mesa 26.2.  Place
+        # the callback immediately before the combine-pattern typedef so it is
+        # available at the add_opt site without disturbing optimizer ordering.
+        marker = 'typedef bool (*combine_instr_callback)(opt_ctx& ctx, alu_opt_info& info);'
+        if marker not in t:
+            raise SystemExit('EXP111: combine callback typedef marker not found')
+        t = t.replace(marker, callback + marker, 1)
+        fuse_new = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", bc250_sdwa_mul24_contract_cb);'
+    else:
+        fuse_new = '''      if (!ctx.bc250_dense_i24) {
+         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
+      }'''
+
+    t = t.replace(fuse_old, fuse_new, 1)
     p.write_text(t)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('source', type=Path)
-    ap.add_argument('mode', choices=['god-gate', 'history-wide', 'wide'])
+    ap.add_argument('mode', choices=['god-gate', 'history-wide', 'wide', 'surgical-history'])
     ap.add_argument('--dense-threshold', type=int, default=1024)
     a = ap.parse_args()
     gate = patch_radv(a.source, a.mode)
     ensure_family_plumbing(a.source)
-    patch_aco(a.source, a.dense_threshold)
-    print(f'EXP111_MATERIALIZED mode={a.mode} gate={gate} dense_threshold={a.dense_threshold}')
+    patch_aco(a.source, a.dense_threshold, a.mode == 'surgical-history')
+    print(f'EXP111_MATERIALIZED mode={a.mode} gate={gate} dense_threshold={a.dense_threshold} surgical={a.mode == "surgical-history"}')
 
 if __name__ == '__main__':
     main()
