@@ -29,8 +29,43 @@ assert 'add_opt(v_mul_i32_i24, v_mad_i32_i24' in aco[idx:idx+256]
 print('EXP111_STRUCTURE_OK')
 PY
 
+# Compiler-level mechanism proof.  This deliberately tests the exact operation
+# EXP111 relies on: two independently signed byte extracts feeding VOP2
+# v_mul_i32_i24 on GFX10.  Run with --no-check and inspect final optimized ACO
+# text, so the test is robust to checker annotation syntax/version drift.
+cat >> src/amd/compiler/tests/test_sdwa.cpp <<'CPP'
+
+BEGIN_TEST(exp111.sdwa.i24_both_signed)
+   //>> v1: %a:v[0], v1: %b:v[1] = p_startpgm
+   if (!setup_cs("v1 v1", GFX10))
+      return;
+
+   Temp a_byte1 = bld.pseudo(aco_opcode::p_extract, bld.def(v1), inputs[0], Operand::c32(1u),
+                             Operand::c32(8u), Operand::c32(1u));
+   Temp b_byte2 = bld.pseudo(aco_opcode::p_extract, bld.def(v1), inputs[1], Operand::c32(2u),
+                             Operand::c32(8u), Operand::c32(1u));
+   writeout(0, bld.vop2(aco_opcode::v_mul_i32_i24, bld.def(v1), a_byte1, b_byte2));
+   finish_opt_test();
+END_TEST
+CPP
+
 MESON_ARGS=(-Dbuildtype=release -Dwrap_mode=nodownload -Dvulkan-drivers=amd -Dgallium-drivers=radeonsi -Dllvm=enabled)
 if [ -f "$BD/meson-private/coredata.dat" ]; then meson setup --reconfigure "$BD" "$PWD" "${MESON_ARGS[@]}"; else meson setup "$BD" "$PWD" "${MESON_ARGS[@]}"; fi
+
+# Build and execute the exact ACO mechanism proof before the full RADV target.
+ninja -C "$BD" src/amd/compiler/tests/aco_tests
+TESTBIN="$BD/src/amd/compiler/tests/aco_tests"
+"$TESTBIN" --no-check exp111.sdwa.i24_both_signed | tee /tmp/exp111-sdwa-proof.txt
+# Both signed extracts must disappear into independent SDWA selectors.
+grep -q 'v_mul_i32_i24' /tmp/exp111-sdwa-proof.txt
+grep -Eq 'src0_sel:sbyte1.*src1_sel:sbyte2|src1_sel:sbyte2.*src0_sel:sbyte1' /tmp/exp111-sdwa-proof.txt
+if grep -q 'p_extract' /tmp/exp111-sdwa-proof.txt; then
+  echo 'EXP111_SDWA_PROOF_FAIL: explicit p_extract survived' >&2
+  cat /tmp/exp111-sdwa-proof.txt >&2
+  exit 6
+fi
+echo 'EXP111_SDWA_DUAL_SIGNED_PROOF=PASS'
+
 ninja -C "$BD" src/amd/vulkan/libvulkan_radeon.so
 mkdir -p "$(dirname "$OUT")"; cp "$BD/src/amd/vulkan/libvulkan_radeon.so" "$OUT"
 (cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256")
