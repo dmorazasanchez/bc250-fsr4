@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [god-gate, history-wide, wide]
+        mode: [surgical-history, god-gate, history-wide, wide]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
