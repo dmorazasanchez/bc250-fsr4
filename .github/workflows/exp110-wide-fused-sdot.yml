@@ -1,0 +1,77 @@
+name: EXP110 wide fused SDOT
+
+on:
+  pull_request:
+    branches: [v3]
+    paths:
+      - 'experiments/EXP-110-WIDE-FUSED-SDOT/**'
+      - 'bc250-fsr4-v3.patch'
+      - 'Dockerfile'
+      - 'mesa-commit.txt'
+      - '.github/workflows/exp110-wide-fused-sdot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - god-gate-fused
+          - serial-wide
+          - dual-wide
+          - hybrid-wide
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate exact SDOT math
+        run: |
+          set -euxo pipefail
+          python3 experiments/EXP-110-WIDE-FUSED-SDOT/test_math.py
+
+      - name: Enable buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Mesa image
+        run: |
+          set -euxo pipefail
+          COMMIT="$(head -n1 mesa-commit.txt)"
+          docker buildx build --tag bc250-fsr4:exp110 --load \
+            --build-arg MESA_COMMIT="$COMMIT" .
+
+      - name: Build EXP110 ${{ matrix.mode }}
+        run: |
+          set -euxo pipefail
+          mkdir -p .build/exp110-${{ matrix.mode }}
+          docker run --rm \
+            --entrypoint /bin/bash \
+            -e WORKSPACE=/workspace \
+            -e BUILD_DIR=/build/exp110-${{ matrix.mode }} \
+            -e OUTPUT=/workspace/experiments/EXP-110-WIDE-FUSED-SDOT/libvulkan_radeon-exp110-${{ matrix.mode }}.so \
+            -v "$PWD:/workspace" \
+            -v "$PWD/.build:/build" \
+            bc250-fsr4:exp110 \
+            /workspace/experiments/EXP-110-WIDE-FUSED-SDOT/ci-build-mode.sh ${{ matrix.mode }}
+
+      - name: Validate candidate
+        run: |
+          set -euxo pipefail
+          EXP=experiments/EXP-110-WIDE-FUSED-SDOT
+          SO="$EXP/libvulkan_radeon-exp110-${{ matrix.mode }}.so"
+          test -s "$SO"
+          (cd "$EXP" && sha256sum -c "$(basename "$SO").sha256")
+          python3 -m py_compile "$EXP/materialize_exp110.py" "$EXP/compare_profiles.py" "$EXP/test_math.py"
+          bash -n "$EXP/build-exp110-all.sh" "$EXP/ci-build-mode.sh"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exp110-${{ matrix.mode }}
+          path: |
+            experiments/EXP-110-WIDE-FUSED-SDOT/libvulkan_radeon-exp110-${{ matrix.mode }}.so
+            experiments/EXP-110-WIDE-FUSED-SDOT/libvulkan_radeon-exp110-${{ matrix.mode }}.so.sha256
+          if-no-files-found: error
+          compression-level: 0
