@@ -11,10 +11,11 @@ JOBS="${JOBS:-$(nproc)}"
 if [ "$#" -gt 0 ]; then
   MODES=("$@")
 else
-  MODES=(god-gate history-wide wide)
+  # Preferred release-oriented mode first, then diagnostic/aggressive bookends.
+  MODES=(surgical-history god-gate history-wide wide)
 fi
 for mode in "${MODES[@]}"; do
-  case "$mode" in god-gate|history-wide|wide) ;; *) echo "Unknown EXP111 mode: $mode" >&2; exit 2;; esac
+  case "$mode" in god-gate|history-wide|wide|surgical-history) ;; *) echo "Unknown EXP111 mode: $mode" >&2; exit 2;; esac
 done
 
 for x in python3 rsync meson ninja sha256sum find; do command -v "$x" >/dev/null || { echo "Missing $x" >&2; exit 2; }; done
@@ -77,10 +78,6 @@ for mode in "${MODES[@]}"; do
   copy_god_source "$SRC"
   python3 "$HERE/materialize_exp111.py" "$SRC" "$mode" --dense-threshold 1024
 
-  # Guard against the exact failure seen on SATAN/GOD: the materializer must
-  # preserve the original gate declaration, including any force_dense_unroll
-  # parameter passed by the caller. Show both lines before spending minutes
-  # compiling so a signature mismatch is visible immediately.
   echo "EXP111_GATE_DECL:"
   grep -n -A2 -B1 '^bc250_lower_dense_sdot4x8(' "$SRC/src/amd/vulkan/radv_shader.c" || true
   echo "EXP111_GATE_CALL:"
