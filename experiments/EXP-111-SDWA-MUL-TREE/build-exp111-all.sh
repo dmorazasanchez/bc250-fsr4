@@ -39,9 +39,6 @@ echo "GOD_SOURCE=$GOD_SRC_RESOLVED"
 printf '%s\n' "$GOD_SRC_RESOLVED" > "$OUTROOT/GOD-SOURCE.txt"
 printf '%s  %s\n' "$GOD_SHA" "$GOD_LIB" > "$OUTROOT/GOD-SHA256.txt"
 
-# Mesa has real source files such as src/util/build_id.c.  Never use broad
-# rsync patterns like build* or cache*: they also match source names.  Only
-# exclude top-level generated build/cache directories from the GOD worktree.
 copy_god_source() {
   local dst="$1"
   rsync -a \
@@ -51,16 +48,8 @@ copy_god_source() {
     --exclude='/cache/' \
     --exclude='/cache-*/' \
     "$GOD_SRC_RESOLVED/" "$dst/"
-
-  # Hard guard for the exact failure this prevents, plus our two patch targets.
-  for required in \
-    src/util/build_id.c \
-    src/amd/vulkan/radv_shader.c \
-    src/amd/compiler/aco_optimizer.cpp; do
-    [ -f "$dst/$required" ] || {
-      echo "EXP111_ABORT: required GOD source file missing after copy: $required" >&2
-      exit 4
-    }
+  for required in src/util/build_id.c src/amd/vulkan/radv_shader.c src/amd/compiler/aco_optimizer.cpp; do
+    [ -f "$dst/$required" ] || { echo "EXP111_ABORT: required GOD source file missing after copy: $required" >&2; exit 4; }
   done
 }
 
@@ -78,7 +67,7 @@ for mode in "${MODES[@]}"; do
   SO="$D/libvulkan_radeon-exp111-$mode.so"; JSON="$D/radv-exp111-$mode.json"
   rm -rf "$SRC" "$BD"; mkdir -p "$SRC" "$CACHE"
   copy_god_source "$SRC"
-  python3 "$HERE/materialize_exp111.py" "$SRC" "$mode"
+  python3 "$HERE/materialize_exp111.py" "$SRC" "$mode" --dense-threshold 1024
   meson setup "$BD" "$SRC" -Dbuildtype=release -Dwrap_mode=nodownload -Dvulkan-drivers=amd -Dgallium-drivers=radeonsi -Dllvm=enabled
   ninja -C "$BD" -j"$JOBS" src/amd/vulkan/libvulkan_radeon.so
   cp "$BD/src/amd/vulkan/libvulkan_radeon.so" "$SO"
