@@ -183,12 +183,13 @@ def patch_aco(src: Path, dense_threshold: int):
     init_old = '   ctx.program = program;\n   ctx.info = std::vector<ssa_info>(program->peekAllocationId());'
     init_new = f'''   ctx.program = program;
 
-   /* EXP111: identify dot-dense GFX1013 compute programs after instruction
-    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24.
+   /* EXP111: identify dot-dense BC-250-class compute programs after
+    * instruction selection but before ACO combines VOP2 mul24+add into VOP3
+    * MAD24.  Frozen GOD's Program does not carry radeon_family, so this
+    * isolated BC-250 experiment keys on the actual GFX10.1 compute target.
     * A 512-SDot data×data shader creates roughly 2048 i24 multiplies before
-    * combining, so a 1024 default threshold leaves substantial margin while
-    * avoiding unrelated compute shaders. */
-   if (program->family == CHIP_GFX1013 && program->stage == compute_cs) {{
+    * combining; the threshold leaves substantial margin from unrelated CS. */
+   if (program->gfx_level == GFX10_1 && program->stage == compute_cs) {{
       unsigned bc250_i24_mul_count = 0;
       for (Block& block : program->blocks) {{
          for (aco_ptr<Instruction>& instr : block.instructions) {{
@@ -205,11 +206,12 @@ def patch_aco(src: Path, dense_threshold: int):
     t = t.replace(init_old, init_new, 1)
 
     fuse_old = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'
-    fuse_new = '''      /* EXP111: in FSR4-like dot-dense GFX1013 compute programs, preserve
+    fuse_new = '''      /* EXP111: in FSR4-like dot-dense GFX10.1 compute programs, preserve
        * VOP2 v_mul_i32_i24 so extract operands remain eligible for SDWA byte
        * selection.  For every other shader retain upstream/GOD MAD fusion. */
-      if (!ctx.bc250_dense_i24)
-         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'''
+      if (!ctx.bc250_dense_i24) {
+         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
+      }'''
     if fuse_old not in t:
         raise SystemExit('EXP111: mul24->mad24 optimizer marker not found')
     t = t.replace(fuse_old, fuse_new, 1)
