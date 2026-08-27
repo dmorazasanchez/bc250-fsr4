@@ -63,10 +63,14 @@ MESON_ARGS=(
 )
 if [ -f "$BD/meson-private/coredata.dat" ]; then meson setup --reconfigure "$BD" "$PWD" "${MESON_ARGS[@]}"; else meson setup "$BD" "$PWD" "${MESON_ARGS[@]}"; fi
 
-ACO_TARGET="$(ninja -C "$BD" -t targets all | awk -F: '/src\/amd\/compiler\/tests\/aco_tests([^[:alnum:]_]|$)/ {print $1; exit}')"
+# Dump targets to a file before parsing.  Do not pipe Ninja into an early-exit
+# consumer under `set -o pipefail`: Ninja gets SIGPIPE and the job exits 141.
+TARGETS_FILE="/tmp/exp111-targets-$MODE.txt"
+ninja -C "$BD" -t targets all > "$TARGETS_FILE"
+ACO_TARGET="$(awk -F: '/src\/amd\/compiler\/tests\/aco_tests([^[:alnum:]_]|$)/ {print $1; exit}' "$TARGETS_FILE")"
 if [ -z "$ACO_TARGET" ]; then
   echo 'EXP111_ABORT: ACO test target not generated' >&2
-  ninja -C "$BD" -t targets all | grep 'amd/compiler/tests' | head -80 >&2 || true
+  grep 'amd/compiler/tests' "$TARGETS_FILE" | sed -n '1,80p' >&2 || true
   exit 7
 fi
 echo "EXP111_ACO_TEST_TARGET=$ACO_TARGET"
