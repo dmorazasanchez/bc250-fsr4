@@ -75,7 +75,6 @@ import json, sys
 src, so, dst = sys.argv[1:]
 with open(src) as f:
     d = json.load(f)
-# Loader JSONs seen in the project use ICD.library_path. Keep all GOD metadata.
 d.setdefault("ICD", {})["library_path"] = so
 with open(dst, "w") as f:
     json.dump(d, f, indent=2)
@@ -118,8 +117,29 @@ for mode in "${MODES[@]}"; do
     make_icd "$OUT_SO" "$OUT_JSON"
     sha256sum "$OUT_SO" | tee "$D/SHA256SUMS"
 
+    if command -v vulkaninfo >/dev/null 2>&1; then
+        echo "Smoke-testing $mode on Vulkan loader"
+        set +e
+        ACO_DEBUG= \
+        VK_DRIVER_FILES="$OUT_JSON" \
+        VK_ICD_FILENAMES="$OUT_JSON" \
+        vulkaninfo --summary >"$D/vulkaninfo-summary.txt" 2>&1
+        vkrc=$?
+        set -e
+        cat "$D/vulkaninfo-summary.txt"
+        if [ "$vkrc" -ne 0 ]; then
+            echo "EXP110_ABORT: vulkaninfo failed for $mode rc=$vkrc" >&2
+            exit "$vkrc"
+        fi
+        grep -q 'AMD BC-250 (RADV GFX1013)' "$D/vulkaninfo-summary.txt" || {
+            echo "EXP110_ABORT: $mode did not enumerate the expected BC-250 device" >&2
+            exit 5
+        }
+        echo "EXP110_VULKAN_OK mode=$mode"
+    fi
+
     cat > "$D/STEAM-LAUNCH-OPTIONS.txt" <<EOF
-MESA_SHADER_CACHE_DIR=$CACHE VK_DRIVER_FILES=$OUT_JSON VK_ICD_FILENAMES=$OUT_JSON PROTON_FSR4_UPGRADE=4.1.1 FSR4_UPGRADE=1 MANGOHUD=1 %command% --launcher-skip
+ACO_DEBUG= MESA_SHADER_CACHE_DIR=$CACHE VK_DRIVER_FILES=$OUT_JSON VK_ICD_FILENAMES=$OUT_JSON PROTON_FSR4_UPGRADE=4.1.1 FSR4_UPGRADE=1 MANGOHUD=1 %command% --launcher-skip
 EOF
 
     echo "EXP110_READY mode=$mode"
