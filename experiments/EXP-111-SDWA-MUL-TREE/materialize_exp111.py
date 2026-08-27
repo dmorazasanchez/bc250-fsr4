@@ -96,8 +96,6 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
 
 
 def find_function(text: str, name: str):
-    # Find a C/C++ function definition by name and match braces while ignoring
-    # braces inside strings/comments well enough for Mesa source.
     m = re.search(r'(^|\n)(?:static\s+)?[\w\s\*]+\b' + re.escape(name) + r'\s*\([^;]*?\)\s*\{', text, re.M | re.S)
     if not m:
         raise SystemExit(f"EXP111: function not found: {name}")
@@ -137,8 +135,6 @@ def find_function(text: str, name: str):
 
 
 def discover_gate(text: str):
-    # Prefer the historical name, otherwise find a static bool function that
-    # calls both the density counter and per-dot helper.
     try:
         return 'bc250_lower_dense_sdot4x8', find_function(text, 'bc250_lower_dense_sdot4x8')
     except SystemExit:
@@ -162,7 +158,6 @@ def patch_radv(src: Path, mode: str):
     t = t[:hs] + BALANCED_HELPER + t[he:]
     gate_name, (gs, ge) = discover_gate(t)
     if mode == 'god-gate':
-        # Keep GOD's exact eligibility logic; helper changed only.
         replacement = t[gs:ge]
     elif mode == 'history-wide':
         replacement = HISTORY_GATE
@@ -188,8 +183,11 @@ def patch_aco(src: Path, dense_threshold: int):
     init_old = '   ctx.program = program;\n   ctx.info = std::vector<ssa_info>(program->peekAllocationId());'
     init_new = f'''   ctx.program = program;
 
-   /* EXP111: identify the dot-dense GFX1013 compute programs after instruction
-    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24. */
+   /* EXP111: identify dot-dense GFX1013 compute programs after instruction
+    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24.
+    * A 512-SDot data×data shader creates roughly 2048 i24 multiplies before
+    * combining, so a 1024 default threshold leaves substantial margin while
+    * avoiding unrelated compute shaders. */
    if (program->family == CHIP_GFX1013 && program->stage == compute_cs) {{
       unsigned bc250_i24_mul_count = 0;
       for (Block& block : program->blocks) {{
@@ -223,7 +221,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('source', type=Path)
     ap.add_argument('mode', choices=['god-gate', 'history-wide', 'wide'])
-    ap.add_argument('--dense-threshold', type=int, default=256,
+    ap.add_argument('--dense-threshold', type=int, default=1024,
                     help='minimum selected v_mul_i32_i24 count before ACO MAD fusion is suppressed')
     a = ap.parse_args()
     gate = patch_radv(a.source, a.mode)
