@@ -14,16 +14,13 @@ PATTERNS = {
     'code_size': re.compile(r'\b(?:code[_ ]size|binary[_ ]size)\b\s*[:= ]\s*(\d+)', re.I),
 }
 
-# Match ACO dumps and assembler-style output.  Important details:
-# - `_sdwa` prevents a simple `\bv_mul_i32_i24\b` from matching because `_`
-#   is a word character.
-# - ACO commonly prints signed selectors as `sbyte0..3`; LLVM/assembler docs
-#   commonly render BYTE_0..3 plus sext state.  Count both representations.
 ISA = {
     'bfe_i32': re.compile(r'\bv_bfe_i32(?:_e64)?\b', re.I),
     'mul_i24_plain': re.compile(r'\bv_mul_i32_i24\b(?!_sdwa)', re.I),
     'mul_i24_sdwa': re.compile(r'\bv_mul_i32_i24_sdwa\b|\bv_mul_i32_i24\b[^\n]*(?:src0_sel|src1_sel)', re.I),
     'mad_i24': re.compile(r'\bv_mad_i32_i24\b', re.I),
+    'add_u32': re.compile(r'\bv_add_u32\b(?![^\n]*add3)', re.I),
+    'add3_u32': re.compile(r'\bv_add3_u32\b', re.I),
     'sdwa_any': re.compile(r'\b[a-z0-9_]+_sdwa\b|\bsrc[01]_sel\s*:', re.I),
     'sbyte_src': re.compile(r'\bsrc[01]_sel\s*:\s*(?:sbyte[0-3]|BYTE_[0-3](?:\s+sext)?)', re.I),
     'src0_sbyte': re.compile(r'\bsrc0_sel\s*:\s*(?:sbyte[0-3]|BYTE_[0-3](?:\s+sext)?)', re.I),
@@ -48,14 +45,22 @@ def scan(root):
             continue
         vals = {k: len(r.findall(t)) for k, r in ISA.items()}
         vals['mul_i24_total'] = vals['mul_i24_plain'] + vals['mul_i24_sdwa']
+        # Focused dynamic-op proxy for the dot arithmetic/extraction core.
+        # ADD3 is one dynamic VALU op even though it consumes three sources.
+        vals['dot_core_dynamic_ops'] = (
+            vals['bfe_i32'] + vals['mul_i24_total'] + vals['mad_i24'] +
+            vals['add_u32'] + vals['add3_u32']
+        )
         # Focused encoding-byte estimate for the instructions EXP111 directly
-        # trades. GFX10 VOP2 plain/BFE are 4B; SDWA and VOP3 MAD are 8B.
-        # This is not total shader code size; it quantifies the local trade.
+        # trades. GFX10 plain VOP2/BFE/ADD are 4B; SDWA, VOP3 MAD and ADD3 are
+        # 8B encodings. This is not total shader code size.
         vals['dot_core_bytes_est'] = (
             vals['bfe_i32'] * 4 +
             vals['mul_i24_plain'] * 4 +
             vals['mul_i24_sdwa'] * 8 +
-            vals['mad_i24'] * 8
+            vals['mad_i24'] * 8 +
+            vals['add_u32'] * 4 +
+            vals['add3_u32'] * 8
         )
         for k, r in PATTERNS.items():
             m = r.search(t)
@@ -84,7 +89,7 @@ def main():
     if not god:
         raise SystemExit('No GOD shader/ISA records found')
 
-    metric_keys = [*ISA.keys(), 'mul_i24_total', 'dot_core_bytes_est']
+    metric_keys = [*ISA.keys(), 'mul_i24_total', 'dot_core_dynamic_ops', 'dot_core_bytes_est']
     rows = []
     for spec in a.candidate:
         name, path = spec.split('=', 1)
@@ -95,7 +100,7 @@ def main():
         nt = {k: 0 for k in metric_keys}
         spill = occ = 0
         changed = 0
-        per_shader_bfe_wins = per_shader_sdwa_wins = 0
+        per_shader_bfe_wins = per_shader_sdwa_wins = per_shader_add3_wins = 0
 
         for s in common:
             g, _ = god[s]
@@ -112,6 +117,8 @@ def main():
                 per_shader_bfe_wins += 1
             if n.get('mul_i24_sdwa', 0) > g.get('mul_i24_sdwa', 0):
                 per_shader_sdwa_wins += 1
+            if n.get('add3_u32', 0) > g.get('add3_u32', 0):
+                per_shader_add3_wins += 1
             if any(n.get(k) != g.get(k) for k in metric_keys):
                 changed += 1
 
@@ -124,13 +131,11 @@ def main():
 
         print(f'changed ISA records: {changed}')
         print(f'new spill regressions: {spill}; occupancy regressions: {occ}')
-        print(f'shaders with fewer BFE: {per_shader_bfe_wins}; shaders with more SDWA MUL24: {per_shader_sdwa_wins}')
+        print(f'shaders with fewer BFE: {per_shader_bfe_wins}; more SDWA MUL24: {per_shader_sdwa_wins}; more ADD3: {per_shader_add3_wins}')
         for k in metric_keys:
             delta = nt[k] - gt[k]
-            print(f'{k:20s} GOD={gt[k]:10d} EXP111={nt[k]:10d} delta={delta:+d}')
+            print(f'{k:22s} GOD={gt[k]:10d} EXP111={nt[k]:10d} delta={delta:+d}')
 
-        # Hard structural gates. Do not mistake a source-level change for a
-        # successful encoding transformation.
         if gt['bfe_i32'] and nt['bfe_i32'] >= gt['bfe_i32'] * 0.90:
             print('ENCODING_GATE=FAIL: v_bfe_i32 did not fall by at least 10%')
         elif nt['mul_i24_sdwa'] <= gt['mul_i24_sdwa']:
