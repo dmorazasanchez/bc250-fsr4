@@ -20,10 +20,6 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
    nir_def *bv = nir_ssa_for_alu_src(b, alu, 1);
    nir_def *c = nir_ssa_for_alu_src(b, alu, 2);
 
-   /* EXP111: preserve four VOP2 i24 multiplies so GFX10 SDWA can consume
-    * signed BYTE_0..BYTE_3 directly. Do not create VOP3 MAD24 here: the
-    * point is fewer final hardware instructions, not fewer NIR arithmetic ops.
-    */
    nir_def *p0 = nir_build_alu2(b, nir_op_imul24_relaxed,
                                 nir_extract_i8_imm(b, a, 0),
                                 nir_extract_i8_imm(b, bv, 0));
@@ -47,9 +43,7 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
 
 '''
 
-WIDE_GATE = r'''static bool
-bc250_lower_dense_sdot4x8(nir_shader *nir)
-{
+WIDE_BODY = r'''
    struct bc250_dot_density density = {0};
    nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
 
@@ -58,13 +52,9 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
 
    return nir_shader_alu_pass(nir, bc250_lower_dense_sdot4x8_one,
                               nir_metadata_control_flow, NULL);
-}
-
 '''
 
-HISTORY_GATE = r'''static bool
-bc250_lower_dense_sdot4x8(nir_shader *nir)
-{
+HISTORY_BODY = r'''
    struct bc250_dot_density density = {0};
    nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
 
@@ -80,8 +70,6 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
 
    return nir_shader_alu_pass(nir, bc250_lower_dense_sdot4x8_one,
                               nir_metadata_control_flow, NULL);
-}
-
 '''
 
 
@@ -119,7 +107,7 @@ def find_function(text: str, name: str):
                     end = i + 1
                     while end < len(text) and text[end] in ' \t': end += 1
                     if end < len(text) and text[end] == '\n': end += 1
-                    return start, end
+                    return start, brace, i, end
         i += 1
     raise SystemExit(f"EXP111: unterminated function: {name}")
 
@@ -132,39 +120,42 @@ def discover_gate(text: str):
     for m in re.finditer(r'\b(static\s+)?bool\s+(bc250_[A-Za-z0-9_]+)\s*\(', text):
         name = m.group(2)
         try:
-            s, e = find_function(text, name)
+            s, ob, cb, e = find_function(text, name)
         except SystemExit:
             continue
-        body = text[s:e]
+        body = text[ob+1:cb]
         if 'bc250_count_dot_density' in body and 'bc250_lower_dense_sdot4x8_one' in body:
-            return name, (s, e)
+            return name, (s, ob, cb, e)
     raise SystemExit('EXP111: could not discover GOD dense-SDOT gate')
+
+
+def replace_body_preserve_signature(text: str, span, new_body: str):
+    s, ob, cb, e = span
+    # Preserve the exact GOD declaration/signature and closing/trailing text.
+    # This is critical because GOD/SATAN currently passes an additional
+    # force_dense_unroll argument while public V3 does not.
+    replacement = text[s:ob+1] + new_body + text[cb:e]
+    return text[:s] + replacement + text[e:]
 
 
 def patch_radv(src: Path, mode: str):
     p = src / 'src/amd/vulkan/radv_shader.c'
     t = p.read_text()
-    hs, he = find_function(t, 'bc250_lower_dense_sdot4x8_one')
+    hs, hob, hcb, he = find_function(t, 'bc250_lower_dense_sdot4x8_one')
     t = t[:hs] + BALANCED_HELPER + t[he:]
-    gate_name, (gs, ge) = discover_gate(t)
-    if mode == 'god-gate':
-        replacement = t[gs:ge]
-    elif mode == 'history-wide':
-        replacement = HISTORY_GATE
-    else:
-        replacement = WIDE_GATE
-    t = t[:gs] + replacement + t[ge:]
+
+    gate_name, gate_span = discover_gate(t)
+    if mode == 'history-wide':
+        t = replace_body_preserve_signature(t, gate_span, HISTORY_BODY)
+    elif mode == 'wide':
+        t = replace_body_preserve_signature(t, gate_span, WIDE_BODY)
+    # god-gate intentionally preserves GOD's exact gate declaration AND body.
+
     p.write_text(t)
     return gate_name
 
 
 def ensure_family_plumbing(src: Path):
-    """Expose radeon_family on Program if this exact GOD source predates that plumbing.
-
-    This is the same tiny plumbing used by our V3 stack: copy options->family
-    into Program during init and add the field beside gfx_level. It changes no
-    codegen by itself; EXP111 only reads it to restrict policy to GFX1013.
-    """
     irh = src / 'src/amd/compiler/aco_ir.h'
     t = irh.read_text()
     if 'enum radeon_family family;' not in t:
@@ -199,8 +190,6 @@ def patch_aco(src: Path, dense_threshold: int):
     init_old = '   ctx.program = program;\n   ctx.info = std::vector<ssa_info>(program->peekAllocationId());'
     init_new = f'''   ctx.program = program;
 
-   /* EXP111: identify dot-dense BC-250 compute programs after instruction
-    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24. */
    if (program->family == CHIP_GFX1013 && program->stage == compute_cs) {{
       unsigned bc250_i24_mul_count = 0;
       for (Block& block : program->blocks) {{
@@ -218,9 +207,7 @@ def patch_aco(src: Path, dense_threshold: int):
     t = t.replace(init_old, init_new, 1)
 
     fuse_old = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'
-    fuse_new = '''      /* EXP111: preserve VOP2 v_mul_i32_i24 in dot-dense BC-250 compute
-       * programs so extract operands stay eligible for SDWA byte selection. */
-      if (!ctx.bc250_dense_i24) {
+    fuse_new = '''      if (!ctx.bc250_dense_i24) {
          add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
       }'''
     if fuse_old not in t:
