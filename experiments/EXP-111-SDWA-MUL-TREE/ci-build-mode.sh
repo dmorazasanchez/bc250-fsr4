@@ -29,10 +29,8 @@ assert 'add_opt(v_mul_i32_i24, v_mad_i32_i24' in aco[idx:idx+256]
 print('EXP111_STRUCTURE_OK')
 PY
 
-# Compiler-level mechanism proof.  This deliberately tests the exact operation
-# EXP111 relies on: two independently signed byte extracts feeding VOP2
-# v_mul_i32_i24 on GFX10.  Run with --no-check and inspect final optimized ACO
-# text, so the test is robust to checker annotation syntax/version drift.
+# Compiler-level mechanism proof. This is the exact operation EXP111 relies on:
+# two independently signed byte extracts feeding VOP2 v_mul_i32_i24 on GFX10.
 cat >> src/amd/compiler/tests/test_sdwa.cpp <<'CPP'
 
 BEGIN_TEST(exp111.sdwa.i24_both_signed)
@@ -49,14 +47,20 @@ BEGIN_TEST(exp111.sdwa.i24_both_signed)
 END_TEST
 CPP
 
-MESON_ARGS=(-Dbuildtype=release -Dwrap_mode=nodownload -Dvulkan-drivers=amd -Dgallium-drivers=radeonsi -Dllvm=enabled)
+MESON_ARGS=(
+  -Dbuildtype=release
+  -Dwrap_mode=nodownload
+  -Dvulkan-drivers=amd
+  -Dgallium-drivers=radeonsi
+  -Dllvm=enabled
+  -Dbuild-aco-tests=true
+)
 if [ -f "$BD/meson-private/coredata.dat" ]; then meson setup --reconfigure "$BD" "$PWD" "${MESON_ARGS[@]}"; else meson setup "$BD" "$PWD" "${MESON_ARGS[@]}"; fi
 
 # Build and execute the exact ACO mechanism proof before the full RADV target.
 ninja -C "$BD" src/amd/compiler/tests/aco_tests
 TESTBIN="$BD/src/amd/compiler/tests/aco_tests"
 "$TESTBIN" --no-check exp111.sdwa.i24_both_signed | tee /tmp/exp111-sdwa-proof.txt
-# Both signed extracts must disappear into independent SDWA selectors.
 grep -q 'v_mul_i32_i24' /tmp/exp111-sdwa-proof.txt
 grep -Eq 'src0_sel:sbyte1.*src1_sel:sbyte2|src1_sel:sbyte2.*src0_sel:sbyte1' /tmp/exp111-sdwa-proof.txt
 if grep -q 'p_extract' /tmp/exp111-sdwa-proof.txt; then
