@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import re
 from pathlib import Path
-
-LOWER_ONE_START = "static bool\nbc250_lower_dense_sdot4x8_one("
-LOWER_GATE_START = "static bool\nbc250_lower_dense_sdot4x8(nir_shader *nir)"
-OPTIMIZE_START = "\nvoid\nradv_optimize_nir("
 
 FUSED_LOWER = r'''static bool
 bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
@@ -57,24 +54,99 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
    nir_def_replace(&alu->def, r);
    return true;
 }
-
 '''
 
-WIDE_GATE_TEMPLATE = r'''static bool
-bc250_lower_dense_sdot4x8(nir_shader *nir)
+
+def find_matching_brace(text: str, open_pos: int) -> int:
+    depth = 0
+    i = open_pos
+    state = "code"
+    while i < len(text):
+        c = text[i]
+        n = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if c == '/' and n == '*':
+                state = "block"; i += 2; continue
+            if c == '/' and n == '/':
+                state = "line"; i += 2; continue
+            if c == '"':
+                state = "string"; i += 1; continue
+            if c == "'":
+                state = "char"; i += 1; continue
+            if c == '{': depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return i
+        elif state == "block":
+            if c == '*' and n == '/': state = "code"; i += 2; continue
+        elif state == "line":
+            if c == '\n': state = "code"
+        elif state == "string":
+            if c == '\\': i += 2; continue
+            if c == '"': state = "code"
+        elif state == "char":
+            if c == '\\': i += 2; continue
+            if c == "'": state = "code"
+        i += 1
+    raise SystemExit("EXP110: unmatched function brace")
+
+
+def function_span_by_name(text: str, name: str):
+    # Function definitions in Mesa are formatted as return type + name(args) + {.
+    pat = re.compile(r"(?m)^(?:static\s+)?(?:[A-Za-z_][\w\s\*]*\n)?" + re.escape(name) + r"\s*\([^;]*?\)\s*\{")
+    m = pat.search(text)
+    if not m:
+        # More tolerant fallback: anchor on the function name, then walk to line start.
+        nm = re.search(r"\b" + re.escape(name) + r"\s*\([^;]*?\)\s*\{", text, re.S)
+        if not nm:
+            raise SystemExit(f"EXP110: function not found: {name}")
+        start = text.rfind("\n", 0, nm.start()) + 1
+        m_start = start
+        open_pos = text.find("{", nm.start(), nm.end())
+    else:
+        m_start = m.start()
+        open_pos = text.find("{", m.start(), m.end())
+    end = find_matching_brace(text, open_pos) + 1
+    return m_start, end, open_pos
+
+
+def discover_gate(text: str):
+    # GOD/SATAN may rename or reshape the gate. Find the C function body that
+    # contains both the density pass and the lowering helper call.
+    for m in re.finditer(r"(?m)^([A-Za-z_][\w\s\*]*\n)?([A-Za-z_]\w*)\s*\([^;]*?\)\s*\{", text):
+        name = m.group(2)
+        if name == "bc250_lower_dense_sdot4x8_one":
+            continue
+        open_pos = text.find("{", m.start(), m.end())
+        try:
+            end = find_matching_brace(text, open_pos) + 1
+        except SystemExit:
+            continue
+        body = text[open_pos:end]
+        if "bc250_count_dot_density" in body and "bc250_lower_dense_sdot4x8_one" in body:
+            return m.start(), end, open_pos, name
+    raise SystemExit("EXP110: dense-SDOT gate function not found structurally")
+
+
+def replace_span(text: str, start: int, end: int, replacement: str) -> str:
+    # Preserve at most one separating newline.
+    if replacement and not replacement.endswith("\n"):
+        replacement += "\n"
+    return text[:start] + replacement + text[end:]
+
+
+def gate_signature(text: str, start: int, open_pos: int) -> str:
+    return text[start:open_pos].rstrip()
+
+
+def wide_gate(signature: str, two_chain: str) -> str:
+    return f'''{signature}
 {{
    struct bc250_dot_density density = {{0}};
    nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
 
-   /* EXP110 wide gate.  The original tiny kernels stay on GOD's deferred
-    * software fallback.  FSR4's substantial INT8 families start at 512
-    * packed signed dots in the audited corpus, including 512/1088/1152,
-    * ED7's 2048 family, 2304, and the larger 4K+ reductions.
-    *
-    * This is deliberately a campaign candidate, not a production claim:
-    * full-corpus zero-spill/occupancy audit and Cyberpunk A/B decide whether
-    * a wide family is retained in the final hybrid.
-    */
+   /* EXP110 wide gate: attack substantial FSR4 signed-dot families together. */
    if (density.sdot < 512)
       return false;
 
@@ -82,32 +154,20 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
    return nir_shader_alu_pass(nir, bc250_lower_dense_sdot4x8_one,
                               nir_metadata_control_flow, (void *)&two_chain);
 }}
-
 '''
 
-HISTORY_GATE = r'''static bool
-bc250_lower_dense_sdot4x8(nir_shader *nir)
-{
-   struct bc250_dot_density density = {0};
+
+def history_gate(signature: str) -> str:
+    return f'''{signature}
+{{
+   struct bc250_dot_density density = {{0}};
    nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
 
-   /* EXP110 history-aware wide gate.
-    *
-    * Preserve the two exclusions established by the earlier full64 campaign:
-    *  - low-IMUL 1152/e955: deferred SDot beat dense MAD24 materially.
-    *  - low-control 2304: dense MAD24 reduced resident waves from 6 to 4.
-    *
-    * Keep GOD's known-good 1088/high-IMUL-1152/control-rich-2304 families,
-    * and broaden to 512, ED7/2048, and >2304 reductions.  Newly admitted
-    * 2048+ families use the dual chain to cap dependency depth/lifetimes.
-    * The aggressive serial/dual-wide variants remain as bookends so the
-    * full64 audit can show whether these historical exclusions still matter
-    * after accumulator fusion removes one ALU per dense dot.
-    */
+   /* EXP110 history-aware wide gate. Preserve two earlier full64 danger
+    * buckets while broadening into 512, ED7/2048, and >2304 reductions. */
    const bool safe_1088 = density.sdot == 1088;
    const bool safe_1152 = density.sdot == 1152 && density.imul >= 100;
    const bool safe_2304 = density.sdot == 2304 && density.bcsel >= 16;
-
    const bool add_512 = density.sdot == 512;
    const bool add_2048 = density.sdot == 2048;
    const bool add_large = density.sdot > 2304;
@@ -118,19 +178,8 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
    const bool two_chain = safe_1152 || safe_2304 || add_2048 || add_large;
    return nir_shader_alu_pass(nir, bc250_lower_dense_sdot4x8_one,
                               nir_metadata_control_flow, (void *)&two_chain);
-}
-
+}}
 '''
-
-
-def replace_between(text: str, start: str, end: str, replacement: str) -> str:
-    i = text.find(start)
-    if i < 0:
-        raise SystemExit(f"EXP110: start marker not found: {start!r}")
-    j = text.find(end, i)
-    if j < 0:
-        raise SystemExit(f"EXP110: end marker not found: {end!r}")
-    return text[:i] + replacement + text[j:]
 
 
 def main() -> None:
@@ -141,31 +190,30 @@ def main() -> None:
 
     path = args.source / "src/amd/vulkan/radv_shader.c"
     text = path.read_text()
-
     if "EXP110: fuse the original SDot accumulator" in text:
         raise SystemExit("EXP110: source already materialized")
 
-    # Preserve every GOD change outside the one SDot lowering helper.
-    text = replace_between(text, LOWER_ONE_START, LOWER_GATE_START, FUSED_LOWER)
+    # Discover the gate BEFORE replacing the helper, so exact GOD/SATAN layout
+    # and function naming are preserved rather than assumed from public V3.
+    gs, ge, go, gate_name = discover_gate(text)
+    gate_sig = gate_signature(text, gs, go)
+    hs, he, _ = function_span_by_name(text, "bc250_lower_dense_sdot4x8_one")
 
+    # Replace later span first so offsets for earlier spans remain valid.
+    spans = [(hs, he, FUSED_LOWER)]
     if args.mode == "history-wide":
-        text = replace_between(text, LOWER_GATE_START, OPTIMIZE_START, HISTORY_GATE)
+        spans.append((gs, ge, history_gate(gate_sig)))
     elif args.mode != "god-gate-fused":
-        if args.mode == "serial-wide":
-            expr = "false"
-        elif args.mode == "dual-wide":
-            expr = "true"
-        else:
-            # Low/medium reductions get the minimum-instruction serial chain.
-            # Large reductions use the shorter-lifetime dual chain to defend
-            # occupancy and expose independent MAD work to ACO.
-            expr = "density.sdot >= 1536"
+        if args.mode == "serial-wide": expr = "false"
+        elif args.mode == "dual-wide": expr = "true"
+        else: expr = "density.sdot >= 1536"
+        spans.append((gs, ge, wide_gate(gate_sig, expr)))
 
-        wide = WIDE_GATE_TEMPLATE.format(two_chain=expr)
-        text = replace_between(text, LOWER_GATE_START, OPTIMIZE_START, wide)
+    for start, end, repl in sorted(spans, key=lambda x: x[0], reverse=True):
+        text = replace_span(text, start, end, repl)
 
     path.write_text(text)
-    print(f"EXP110_MATERIALIZED mode={args.mode} file={path}")
+    print(f"EXP110_MATERIALIZED mode={args.mode} gate={gate_name} file={path}")
 
 
 if __name__ == "__main__":
