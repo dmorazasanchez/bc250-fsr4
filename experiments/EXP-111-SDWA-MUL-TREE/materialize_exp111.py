@@ -21,9 +21,8 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
    nir_def *c = nir_ssa_for_alu_src(b, alu, 2);
 
    /* EXP111: preserve four VOP2 i24 multiplies so GFX10 SDWA can consume
-    * signed BYTE_0..BYTE_3 directly.  Do not create VOP3 MAD24 here: the
-    * point of this experiment is to trade one or two arithmetic combines for
-    * removal of the byte-extraction instructions at the hardware level.
+    * signed BYTE_0..BYTE_3 directly. Do not create VOP3 MAD24 here: the
+    * point is fewer final hardware instructions, not fewer NIR arithmetic ops.
     */
    nir_def *p0 = nir_build_alu2(b, nir_op_imul24_relaxed,
                                 nir_extract_i8_imm(b, a, 0),
@@ -54,10 +53,6 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
    struct bc250_dot_density density = {0};
    nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
 
-   /* EXP111 wide gate: attack the substantial FSR4 INT8 families together.
-    * Tiny kernels remain on GOD's normal fallback.  The ACO-side dense-i24
-    * detector provides a second guard before MAD fusion is suppressed.
-    */
    if (density.sdot < 512)
       return false;
 
@@ -73,11 +68,6 @@ bc250_lower_dense_sdot4x8(nir_shader *nir)
    struct bc250_dot_density density = {0};
    nir_shader_alu_pass(nir, bc250_count_dot_density, nir_metadata_all, &density);
 
-   /* EXP111 history-aware gate.  Preserve known bad families from the old
-    * MAD24 campaign, but admit the previously-unoptimized 512/2048/>2304
-    * families because this experiment changes the hardware encoding strategy
-    * rather than extending the MAD dependency chain.
-    */
    const bool safe_1088 = density.sdot == 1088;
    const bool safe_1152 = density.sdot == 1152 && density.imul >= 100;
    const bool safe_2304 = density.sdot == 2304 && density.bcsel >= 16;
@@ -183,13 +173,11 @@ def patch_aco(src: Path, dense_threshold: int):
     init_old = '   ctx.program = program;\n   ctx.info = std::vector<ssa_info>(program->peekAllocationId());'
     init_new = f'''   ctx.program = program;
 
-   /* EXP111: identify dot-dense BC-250-class compute programs after
-    * instruction selection but before ACO combines VOP2 mul24+add into VOP3
-    * MAD24.  Frozen GOD's Program does not carry radeon_family, so this
-    * isolated BC-250 experiment keys on the actual GFX10.1 compute target.
-    * A 512-SDot data×data shader creates roughly 2048 i24 multiplies before
-    * combining; the threshold leaves substantial margin from unrelated CS. */
-   if (program->gfx_level == GFX10_1 && program->stage == compute_cs) {{
+   /* EXP111: identify dot-dense BC-250 compute programs after instruction
+    * selection but before ACO combines VOP2 mul24+add into VOP3 MAD24.
+    * Use the exact family identifier; this avoids gfx-level naming/version
+    * ambiguity and prevents the policy from leaking to other Navi10-class GPUs. */
+   if (program->family == CHIP_GFX1013 && program->stage == compute_cs) {{
       unsigned bc250_i24_mul_count = 0;
       for (Block& block : program->blocks) {{
          for (aco_ptr<Instruction>& instr : block.instructions) {{
@@ -206,9 +194,8 @@ def patch_aco(src: Path, dense_threshold: int):
     t = t.replace(init_old, init_new, 1)
 
     fuse_old = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'
-    fuse_new = '''      /* EXP111: in FSR4-like dot-dense GFX10.1 compute programs, preserve
-       * VOP2 v_mul_i32_i24 so extract operands remain eligible for SDWA byte
-       * selection.  For every other shader retain upstream/GOD MAD fusion. */
+    fuse_new = '''      /* EXP111: preserve VOP2 v_mul_i32_i24 in dot-dense BC-250 compute
+       * programs so extract operands stay eligible for SDWA byte selection. */
       if (!ctx.bc250_dense_i24) {
          add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
       }'''
@@ -223,8 +210,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('source', type=Path)
     ap.add_argument('mode', choices=['god-gate', 'history-wide', 'wide'])
-    ap.add_argument('--dense-threshold', type=int, default=1024,
-                    help='minimum selected v_mul_i32_i24 count before ACO MAD fusion is suppressed')
+    ap.add_argument('--dense-threshold', type=int, default=1024)
     a = ap.parse_args()
     gate = patch_radv(a.source, a.mode)
     patch_aco(a.source, a.dense_threshold)
