@@ -21,6 +21,7 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n experiments/EXP-112-SDOT-TOPOLOGY-PK16/build-exp112-all.sh
+          bash -n experiments/EXP-112-SDOT-TOPOLOGY-PK16/run-exp112-corpus.sh
 
       - name: Census parser smoke test
         run: |
@@ -38,3 +39,6 @@ jobs:
           grep -q 'bc250_exp112_alu_operand_constant' experiments/EXP-112-SDOT-TOPOLOGY-PK16/materialize_exp112.py
           grep -q 'family-auto' experiments/EXP-112-SDOT-TOPOLOGY-PK16/materialize_exp112.py
           grep -q 'const-sdwa' experiments/EXP-112-SDOT-TOPOLOGY-PK16/build-exp112-all.sh
+          grep -q 'profile_fsr4.py' experiments/EXP-112-SDOT-TOPOLOGY-PK16/run-exp112-corpus.sh
+          grep -q 'compare-god-vs' experiments/EXP-112-SDOT-TOPOLOGY-PK16/run-exp112-corpus.sh
+          grep -q 'EXP-111-SDWA-MUL-TREE/audit_isa.py' experiments/EXP-112-SDOT-TOPOLOGY-PK16/run-exp112-corpus.sh
