@@ -20,6 +20,11 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
    nir_def *bv = nir_ssa_for_alu_src(b, alu, 1);
    nir_def *c = nir_ssa_for_alu_src(b, alu, 2);
 
+   /* EXP111: deliberately preserve four two-source i24 multiplies.  On GFX10
+    * v_mul_i32_i24 has an SDWA encoding with signed BYTE_0..BYTE_3 source
+    * selection.  If ACO can fold the extract_i8 producers into those source
+    * selectors, the hardware stream can remove the standalone byte extracts.
+    */
    nir_def *p0 = nir_build_alu2(b, nir_op_imul24_relaxed,
                                 nir_extract_i8_imm(b, a, 0),
                                 nir_extract_i8_imm(b, bv, 0));
@@ -33,6 +38,7 @@ bc250_lower_dense_sdot4x8_one(nir_builder *b, nir_alu_instr *alu, void *data)
                                 nir_extract_i8_imm(b, a, 3),
                                 nir_extract_i8_imm(b, bv, 3));
 
+   /* Balanced adds keep the dependency tree shallow. */
    nir_def *r01 = nir_iadd(b, p0, p1);
    nir_def *r23 = nir_iadd(b, p2, p3);
    nir_def *r = nir_iadd(b, nir_iadd(b, r01, r23), c);
@@ -89,24 +95,38 @@ def find_function(text: str, name: str):
         ch = text[i]
         nx = text[i+1] if i + 1 < len(text) else ''
         if line_comment:
-            if ch == '\n': line_comment = False
+            if ch == '\n':
+                line_comment = False
         elif block_comment:
-            if ch == '*' and nx == '/': block_comment = False; i += 1
+            if ch == '*' and nx == '/':
+                block_comment = False
+                i += 1
         elif in_str:
-            if esc: esc = False
-            elif ch == '\\': esc = True
-            elif ch == in_str: in_str = None
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == in_str:
+                in_str = None
         else:
-            if ch == '/' and nx == '/': line_comment = True; i += 1
-            elif ch == '/' and nx == '*': block_comment = True; i += 1
-            elif ch in ('"', "'"): in_str = ch
-            elif ch == '{': depth += 1
+            if ch == '/' and nx == '/':
+                line_comment = True
+                i += 1
+            elif ch == '/' and nx == '*':
+                block_comment = True
+                i += 1
+            elif ch in ('"', "'"):
+                in_str = ch
+            elif ch == '{':
+                depth += 1
             elif ch == '}':
                 depth -= 1
                 if depth == 0:
                     end = i + 1
-                    while end < len(text) and text[end] in ' \t': end += 1
-                    if end < len(text) and text[end] == '\n': end += 1
+                    while end < len(text) and text[end] in ' \t':
+                        end += 1
+                    if end < len(text) and text[end] == '\n':
+                        end += 1
                     return start, brace, i, end
         i += 1
     raise SystemExit(f"EXP111: unterminated function: {name}")
@@ -146,7 +166,7 @@ def patch_radv(src: Path, mode: str):
         t = replace_body_preserve_signature(t, gate_span, HISTORY_BODY)
     elif mode == 'wide':
         t = replace_body_preserve_signature(t, gate_span, WIDE_BODY)
-    # god-gate intentionally preserves GOD's exact gate declaration AND body.
+    # god-gate intentionally preserves GOD's exact eligibility policy.
 
     p.write_text(t)
     return gate_name
@@ -187,6 +207,9 @@ def patch_aco(src: Path, dense_threshold: int, surgical: bool):
     init_old = '   ctx.program = program;\n   ctx.info = std::vector<ssa_info>(program->peekAllocationId());'
     init_new = f'''   ctx.program = program;
 
+   /* Detect the very large i24-multiply compute programs created by the
+    * EXP111 SDOT lowering.  The threshold is intentionally far above normal
+    * incidental i24 use so non-FSR4 game shaders retain GOD/upstream ACO. */
    if (program->family == CHIP_GFX1013 && program->stage == compute_cs) {{
       unsigned bc250_i24_mul_count = 0;
       for (Block& block : program->blocks) {{
@@ -203,48 +226,78 @@ def patch_aco(src: Path, dense_threshold: int, surgical: bool):
         raise SystemExit('EXP111: optimize() init marker not found')
     t = t.replace(init_old, init_new, 1)
 
-    fuse_old = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'
-    if fuse_old not in t:
-        raise SystemExit('EXP111: mul24->mad24 optimizer marker not found')
+    # There are TWO relevant contraction paths in Mesa 26.2/current ACO:
+    #   v_add_u32    + v_mul_i32_i24 -> v_mad_i32_i24
+    #   v_add_co_u32 + v_mul_i32_i24 -> v_mad_i32_i24 when carry is dead
+    # The first is the normal NIR iadd path and is the critical one for EXP111.
+    fuse_plain = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", nullptr, true);'
+    fuse_pop = '         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);'
+    if fuse_plain not in t:
+        raise SystemExit('EXP111: plain mul24->mad24 optimizer marker not found')
+    if fuse_pop not in t:
+        raise SystemExit('EXP111: carry mul24->mad24 optimizer marker not found')
 
     if surgical:
-        # match_and_apply_patterns() has already formed the prospective MAD and
-        # back-propagated extract modifiers before this callback executes.
-        # Reject only the candidates whose two multiply operands are signed
-        # byte extracts; those are exactly the MULs that can become dual-source
-        # SDWA sbyte selectors.  All unrelated i24 MUL+ADD contractions keep
-        # GOD/upstream behavior via pop_def_cb().
         callback = r'''
-bool
-bc250_sdwa_mul24_contract_cb(opt_ctx& ctx, alu_opt_info& info)
+static bool
+bc250_signed_byte_mul24_operands(opt_ctx& ctx, alu_opt_info& info)
 {
-   if (ctx.bc250_dense_i24 && info.operands.size() >= 2) {
-      const SubdwordSel a = info.operands[0].extract[0];
-      const SubdwordSel b = info.operands[1].extract[0];
-      const bool signed_byte_a = a.size() == 1 && a.sign_extend();
-      const bool signed_byte_b = b.size() == 1 && b.sign_extend();
-      if (signed_byte_a && signed_byte_b)
-         return false;
-   }
+   if (!ctx.bc250_dense_i24 || info.operands.size() < 2)
+      return false;
 
+   /* After ACO operand propagation, extract_i8 is represented by the source
+    * SubdwordSel.  A one-byte signed selection is exactly what GFX10's SDWA
+    * v_mul_i32_i24 can encode as src_sel:BYTE_n with sext. */
+   const SubdwordSel a = info.operands[0].extract[0];
+   const SubdwordSel b = info.operands[1].extract[0];
+   return a.size() == 1 && a.sign_extend() && b.size() == 1 && b.sign_extend();
+}
+
+static bool
+bc250_sdwa_mul24_contract_no_pop_cb(opt_ctx& ctx, alu_opt_info& info)
+{
+   return !bc250_signed_byte_mul24_operands(ctx, info);
+}
+
+static bool
+bc250_sdwa_mul24_contract_pop_cb(opt_ctx& ctx, alu_opt_info& info)
+{
+   if (bc250_signed_byte_mul24_operands(ctx, info))
+      return false;
    return pop_def_cb(ctx, info);
 }
 
 '''
-        # pop_def_cb is defined before combine_instruction in Mesa 26.2.  Place
-        # the callback immediately before the combine-pattern typedef so it is
-        # available at the add_opt site without disturbing optimizer ordering.
         marker = 'typedef bool (*combine_instr_callback)(opt_ctx& ctx, alu_opt_info& info);'
         if marker not in t:
             raise SystemExit('EXP111: combine callback typedef marker not found')
         t = t.replace(marker, callback + marker, 1)
-        fuse_new = '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", bc250_sdwa_mul24_contract_cb);'
+        t = t.replace(
+            fuse_plain,
+            '      add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", bc250_sdwa_mul24_contract_no_pop_cb, true);',
+            1,
+        )
+        t = t.replace(
+            fuse_pop,
+            '         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", bc250_sdwa_mul24_contract_pop_cb);',
+            1,
+        )
     else:
-        fuse_new = '''      if (!ctx.bc250_dense_i24) {
-         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
-      }'''
+        t = t.replace(
+            fuse_plain,
+            '''      if (!ctx.bc250_dense_i24) {
+         add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", nullptr, true);
+      }''',
+            1,
+        )
+        t = t.replace(
+            fuse_pop,
+            '''         if (!ctx.bc250_dense_i24) {
+            add_opt(v_mul_i32_i24, v_mad_i32_i24, 0x3, "120", pop_def_cb);
+         }''',
+            1,
+        )
 
-    t = t.replace(fuse_old, fuse_new, 1)
     p.write_text(t)
 
 
@@ -258,6 +311,7 @@ def main():
     ensure_family_plumbing(a.source)
     patch_aco(a.source, a.dense_threshold, a.mode == 'surgical-history')
     print(f'EXP111_MATERIALIZED mode={a.mode} gate={gate} dense_threshold={a.dense_threshold} surgical={a.mode == "surgical-history"}')
+
 
 if __name__ == '__main__':
     main()
