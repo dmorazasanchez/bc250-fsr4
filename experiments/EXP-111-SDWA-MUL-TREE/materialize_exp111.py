@@ -264,7 +264,13 @@ bc250_sdwa_mul24_contract_pop_cb(opt_ctx& ctx, alu_opt_info& info)
 {
    if (bc250_signed_byte_mul24_operands(ctx, info))
       return false;
-   return pop_def_cb(ctx, info);
+
+   /* Inline pop_def_cb semantics here because this callback is emitted before
+    * the generic callback typedef/definitions in Mesa source. */
+   assert(info.defs.size() >= 2);
+   assert(ctx.uses[info.defs.back().tempId()] == 0);
+   info.defs.pop_back();
+   return true;
 }
 
 '''
