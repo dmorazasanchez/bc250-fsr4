@@ -1,0 +1,40 @@
+name: EXP112 structural validation
+
+on:
+  push:
+    branches:
+      - exp112-sdot-topology-pk16
+  workflow_dispatch:
+
+jobs:
+  syntax-and-census:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile \
+            experiments/EXP-112-SDOT-TOPOLOGY-PK16/materialize_exp112.py \
+            experiments/EXP-112-SDOT-TOPOLOGY-PK16/analyze_census.py
+
+      - name: Shell syntax
+        run: |
+          bash -n experiments/EXP-112-SDOT-TOPOLOGY-PK16/build-exp112-all.sh
+
+      - name: Census parser smoke test
+        run: |
+          cat > /tmp/exp112-census.log <<'EOF'
+          EXP112_CENSUS name=testA density_sdot=512 total=512 dd=400 dc=64 cd=48 cc=0 acc_zero=256 acc_const=0 acc_dynamic=256
+          EXP112_CENSUS name=testB density_sdot=1088 total=1088 dd=1088 dc=0 cd=0 cc=0 acc_zero=0 acc_const=0 acc_dynamic=1088
+          EOF
+          python3 experiments/EXP-112-SDOT-TOPOLOGY-PK16/analyze_census.py \
+            --min-const-pct 1 --min-const-ops 100 /tmp/exp112-census.log | tee /tmp/result
+          grep -q 'CONST_SPECIALIZATION_GATE=PASS' /tmp/result
+
+      - name: Structural markers
+        run: |
+          grep -q 'bc250_exp112_census' experiments/EXP-112-SDOT-TOPOLOGY-PK16/materialize_exp112.py
+          grep -q 'bc250_exp112_alu_operand_constant' experiments/EXP-112-SDOT-TOPOLOGY-PK16/materialize_exp112.py
+          grep -q 'family-auto' experiments/EXP-112-SDOT-TOPOLOGY-PK16/materialize_exp112.py
+          grep -q 'const-sdwa' experiments/EXP-112-SDOT-TOPOLOGY-PK16/build-exp112-all.sh
