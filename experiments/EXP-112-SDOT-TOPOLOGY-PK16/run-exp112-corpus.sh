@@ -73,7 +73,8 @@ run_profile() {
 run_profile census "$(icd_for census)" 1
 
 echo
-echo "================ TOPOLOGY CENSUS ================"npython3 "$ANALYZE" "$PROFILE_ROOT/census" "$PROFILE_ROOT/census.log" | tee "$PROFILE_ROOT/census-summary.txt"
+echo "================ TOPOLOGY CENSUS ================"
+python3 "$ANALYZE" "$PROFILE_ROOT/census" "$PROFILE_ROOT/census.log" | tee "$PROFILE_ROOT/census-summary.txt"
 
 # Fresh same-corpus baseline and the three already-built EXP112 candidates.
 run_profile god "$GOD_ICD" 0
@@ -93,7 +94,8 @@ for mode in sdwa-ref const-sdwa const-fused; do
 done
 
 echo
-echo "================ EXP112 ISA AUDIT ================"npython3 "$AUDIT" \
+echo "================ EXP112 ISA AUDIT ================"
+python3 "$AUDIT" \
   --god "$PROFILE_ROOT/god" \
   --candidate "sdwa-ref=$PROFILE_ROOT/sdwa-ref" \
   --candidate "const-sdwa=$PROFILE_ROOT/const-sdwa" \
