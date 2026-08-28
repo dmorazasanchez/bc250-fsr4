@@ -37,14 +37,12 @@ if mode == 'surgical-history':
     assert 'bc250_sdwa_mul24_contract_pop_cb);' in aco
     assert aco.count('if (!ctx.bc250_dense_i24)') == 0
 else:
-    # Both integer-add forms must be prevented from recreating VOP3 MAD24 in
-    # dot-dense GFX1013 compute shaders.
     assert aco.count('if (!ctx.bc250_dense_i24)') >= 2
 print(f'EXP111_STRUCTURE_OK mode={mode}')
 PY
 
-# Prove the key hardware-ISA opportunity without a GPU.  ACO's existing SDWA
-# optimizer tests use p_extract and print signed selections as sbyteN.
+# Prove the key hardware-ISA opportunity without a GPU. ACO's existing SDWA
+# tests use signed p_extract and print those selectors as sbyteN.
 cat >> src/amd/compiler/tests/test_sdwa.cpp <<'CPP'
 
 BEGIN_TEST(exp111.sdwa.i24_both_signed)
@@ -72,22 +70,19 @@ MESON_ARGS=(
 rm -rf "$BD"
 meson setup "$BD" "$PWD" "${MESON_ARGS[@]}"
 
-TARGETS_FILE="/tmp/exp111-targets-$MODE.txt"
-ninja -C "$BD" -t targets all > "$TARGETS_FILE"
-ACO_TARGET="$(awk -F: '/src\/amd\/compiler\/tests\/aco_tests([^[:alnum:]_]|$)/ {print $1; exit}' "$TARGETS_FILE")"
-if [ -z "$ACO_TARGET" ]; then
-  echo 'EXP111_ABORT: ACO test target not generated' >&2
-  grep 'amd/compiler/tests' "$TARGETS_FILE" | sed -n '1,80p' >&2 || true
-  exit 7
-fi
+# Mesa names the executable exactly `aco_tests`; the previous target discovery
+# accidentally selected a generated `aco_tests.p/*.h` dependency.
+ACO_TARGET="src/amd/compiler/tests/aco_tests"
+TESTBIN="$BD/$ACO_TARGET"
+SHIM="$BD/src/amd/drm-shim/libamdgpu_noop_drm_shim.so"
 echo "EXP111_ACO_TEST_TARGET=$ACO_TARGET"
 ninja -C "$BD" "$ACO_TARGET"
-TESTBIN="$BD/$ACO_TARGET"
 [ -x "$TESTBIN" ] || { echo "EXP111_ABORT: test binary missing: $TESTBIN" >&2; exit 7; }
-"$TESTBIN" --no-check exp111.sdwa.i24_both_signed | tee /tmp/exp111-sdwa-proof.txt
+[ -f "$SHIM" ] || { echo "EXP111_ABORT: DRM shim missing: $SHIM" >&2; exit 7; }
+LD_PRELOAD="$SHIM" "$TESTBIN" --no-check exp111.sdwa.i24_both_signed | tee /tmp/exp111-sdwa-proof.txt
 
 grep -q 'v_mul_i32_i24' /tmp/exp111-sdwa-proof.txt
-# ACO's printer uses sbyteN for signed SDWA selectors.  Require BOTH sources.
+# Require BOTH signed byte sources on the MUL itself.
 grep -Eq 'src0_sel:sbyte1.*src1_sel:sbyte2|src1_sel:sbyte2.*src0_sel:sbyte1' /tmp/exp111-sdwa-proof.txt
 if grep -q 'p_extract' /tmp/exp111-sdwa-proof.txt; then
   echo 'EXP111_SDWA_PROOF_FAIL: explicit p_extract survived' >&2
