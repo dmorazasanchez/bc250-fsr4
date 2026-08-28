@@ -1,0 +1,56 @@
+name: EXP111 SDWA mul tree
+on:
+  pull_request:
+    branches: [v3]
+    paths:
+      - 'experiments/EXP-111-SDWA-MUL-TREE/**'
+      - 'bc250-fsr4-v3.patch'
+      - 'Dockerfile'
+      - 'mesa-commit.txt'
+      - '.github/workflows/exp111-sdwa-mul-tree.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [surgical-history, god-gate, history-wide, wide]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Mesa image
+        run: |
+          set -euxo pipefail
+          COMMIT="$(head -n1 mesa-commit.txt)"
+          docker buildx build --tag bc250-fsr4:exp111 --load --build-arg MESA_COMMIT="$COMMIT" .
+      - name: Build EXP111 ${{ matrix.mode }}
+        run: |
+          set -euxo pipefail
+          mkdir -p .build/exp111-${{ matrix.mode }}
+          docker run --rm --entrypoint /bin/bash \
+            -e WORKSPACE=/workspace \
+            -e BUILD_DIR=/build/exp111-${{ matrix.mode }} \
+            -e OUTPUT=/workspace/experiments/EXP-111-SDWA-MUL-TREE/libvulkan_radeon-exp111-${{ matrix.mode }}.so \
+            -v "$PWD:/workspace" -v "$PWD/.build:/build" \
+            bc250-fsr4:exp111 \
+            /workspace/experiments/EXP-111-SDWA-MUL-TREE/ci-build-mode.sh ${{ matrix.mode }}
+      - name: Validate
+        run: |
+          set -euxo pipefail
+          EXP=experiments/EXP-111-SDWA-MUL-TREE
+          SO="$EXP/libvulkan_radeon-exp111-${{ matrix.mode }}.so"
+          test -s "$SO"
+          (cd "$EXP" && sha256sum -c "$(basename "$SO").sha256")
+          python3 -m py_compile "$EXP/materialize_exp111.py"
+          bash -n "$EXP/build-exp111-all.sh" "$EXP/ci-build-mode.sh"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exp111-${{ matrix.mode }}
+          path: |
+            experiments/EXP-111-SDWA-MUL-TREE/libvulkan_radeon-exp111-${{ matrix.mode }}.so
+            experiments/EXP-111-SDWA-MUL-TREE/libvulkan_radeon-exp111-${{ matrix.mode }}.so.sha256
+          if-no-files-found: error
+          compression-level: 0
