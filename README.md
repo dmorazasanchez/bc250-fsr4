@@ -164,3 +164,9 @@ Do not enable Mesa's native signed packed-dot path on BC-250. V3 deliberately do
 Thanks to the BC-250 community for reverse engineering, testing and sharing results.
 
 Special thanks to **higorprado** for earlier packaging/benchmarking contributions and to the MastaG BC-250 work for the compute-queue/RADV compatibility base used during development.
+
+## License
+
+Project-authored code, scripts, documentation, and original modifications in this repository are available under the [MIT License](LICENSE).
+
+The patches are applied to Mesa and include upstream context. Mesa source files retain their existing upstream copyright notices and license terms; this repository's MIT license does not replace those upstream notices.
